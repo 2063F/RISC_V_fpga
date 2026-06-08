@@ -129,8 +129,15 @@ module instruction_decoder (
                 branch    = 1'b1;
                 imm_type  = `IMM_B;
                 alu_src_b = 1'b0; // Use rs2 for comparison
-                // Comparison will be handled by subtracting and checking zero/sign
-                alu_op    = `ALU_SUB; // Basic subtraction for comparison
+                case (funct3)
+                    `FUNCT3_BEQ,
+                    `FUNCT3_BNE:  alu_op = `ALU_SUB;
+                    `FUNCT3_BLT,
+                    `FUNCT3_BGE:  alu_op = `ALU_SLT;
+                    `FUNCT3_BLTU,
+                    `FUNCT3_BGEU: alu_op = `ALU_SLTU;
+                    default:      alu_op = `ALU_SUB;
+                endcase
             end
 
             // ------------------------------------------------------------------

@@ -1,31 +1,27 @@
 // =============================================================================
-// Tang Primer 25K Dock - Pin Constraint File
-// FPGA: Gowin GW5A-LV25MG121NC1/I0
-// Board: Sipeed Tang Primer 25K + Dock
+// Tang Primer 25K Dock - Pin Constraint File (回路図 v1.1 確認済み)
 // =============================================================================
 
-// --- System Clock (50 MHz Crystal Oscillator) ---
+// --- System Clock (50MHz) ---
 IO_LOC "clk" E2;
 IO_PORT "clk" IO_TYPE=LVCMOS33;
 
-// --- Reset Button (Active High, directly usable) ---
+// --- Reset Button S1 (Active High, H11=IOT3A_S1) ---
 IO_LOC "rst_btn" H11;
 IO_PORT "rst_btn" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 
-// --- User Button ---
+// --- User Button S2 (H10=IOT3B_S2) ---
 IO_LOC "user_btn" H10;
 IO_PORT "user_btn" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 
-// --- Onboard LEDs ---
+// --- UART (BL616デバッガ経由、USB-Cで接続) - Phase 6で有効化します ---
+IO_LOC "uart_tx" C3;
+IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+// IO_LOC "uart_rx" B3;
+// IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// --- Onboard LEDs (READY=E8, DONE=D7 - dual-purpose option enabled in build) ---
 IO_LOC "led[0]" E8;
 IO_PORT "led[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-
 IO_LOC "led[1]" D7;
 IO_PORT "led[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-
-// --- UART (via onboard USB-JTAG debugger) ---
-// Note: Confirm these pins from the official schematic for your board revision.
-// IO_LOC "uart_tx" xxx;
-// IO_PORT "uart_tx" IO_TYPE=LVCMOS33;
-// IO_LOC "uart_rx" xxx;
-// IO_PORT "uart_rx" IO_TYPE=LVCMOS33;

@@ -22,7 +22,10 @@ module register_file (
     // Write port
     input  wire [4:0]  rd,        // Destination register address
     input  wire [31:0] wd,        // Write data
-    input  wire        we         // Write enable
+    input  wire        we,        // Write enable
+
+    // Debug read port (always outputs x1 for FPGA monitoring)
+    output wire [31:0] dbg_x1
 );
 
     // =========================================================================
@@ -49,7 +52,8 @@ module register_file (
     // Asynchronous read
     // x0 always returns 0 regardless of what is stored
     // =========================================================================
-    assign rd1 = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
-    assign rd2 = (rs2 == 5'd0) ? 32'd0 : regs[rs2];
+    assign rd1    = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
+    assign rd2    = (rs2 == 5'd0) ? 32'd0 : regs[rs2];
+    assign dbg_x1 = regs[1]; // Debug: always expose x1 for FPGA LED display
 
 endmodule

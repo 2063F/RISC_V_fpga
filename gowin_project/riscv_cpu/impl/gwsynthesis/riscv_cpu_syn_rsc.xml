@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Module name="fpga_top" Register="27" Alu="24" Lut="12" T_Register="5178(27)" T_Alu="120(24)" T_Lut="3831(12)">
+ <SubModule name="cpu" Alu="64" Lut="350" T_Register="5151(0)" T_Alu="96(64)" T_Lut="3819(350)">
+  <SubModule name="uart_tx_inst" Register="31" Lut="51" T_Register="31(31)" T_Lut="51(51)"/>
+  <SubModule name="pc_reg" Register="32" Lut="4" T_Register="32(32)" T_Lut="4(4)"/>
+  <SubModule name="imem" Lut="48" T_Lut="48(48)"/>
+  <SubModule name="dec" Lut="2" T_Lut="2(2)"/>
+  <SubModule name="igen" Lut="41" T_Lut="41(41)"/>
+  <SubModule name="regfile" Register="992" Lut="1096" T_Register="992(992)" T_Lut="1096(1096)"/>
+  <SubModule name="alu_inst" Alu="32" Lut="7" T_Alu="32(32)" T_Lut="7(7)"/>
+  <SubModule name="dmem" Register="4096" Lut="2220" T_Register="4096(4096)" T_Lut="2220(2220)"/>
+ </SubModule>
+</Module>

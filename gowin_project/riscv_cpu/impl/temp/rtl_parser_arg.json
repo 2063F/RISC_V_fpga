@@ -1,0 +1,53 @@
+{
+ "Device" : "GW5A-25A",
+ "Files" : [
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/alu.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/control_unit.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/cpu_top.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/data_memory.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/fpga_top.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/imm_gen.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/instruction_decoder.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/instruction_memory.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/program_counter.v",
+   "Type" : "verilog"
+  },
+  {
+   "Path" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/register_file.v",
+   "Type" : "verilog"
+  }
+ ],
+ "IncludePath" : [
+
+ ],
+ "LoopLimit" : 2000,
+ "ResultFile" : "C:/Users/dengiken-admin/Documents/RISK_V_fpga/gowin_project/riscv_cpu/impl/temp/rtl_parser.result",
+ "Top" : "fpga_top",
+ "VerilogStd" : "verilog_2001",
+ "VhdlStd" : "vhdl_93"
+}
