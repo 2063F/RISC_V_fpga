@@ -32,7 +32,7 @@ module fpga_top (
     wire [31:0] debug_x1;
 
     cpu_top #(
-        .INIT_FILE("uart_hello.hex")
+        .INIT_FILE("uart_debug.hex")
     ) cpu (
         .clk            (clk),
         .rst_n          (cpu_rst_n),

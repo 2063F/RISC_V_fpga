@@ -24,10 +24,10 @@ Analyzing included file 'C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\riscv
 Back to file 'C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\data_memory.v'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\data_memory.v":24)
 Analyzing Verilog file 'C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\uart_tx.v'
 Compiling module 'fpga_top'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\fpga_top.v":14)
-Compiling module 'cpu_top(INIT_FILE="uart_hello.hex")'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\cpu_top.v":27)
+Compiling module 'cpu_top(INIT_FILE="uart_debug.hex")'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\cpu_top.v":27)
 Compiling module 'uart_tx'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\uart_tx.v":11)
 Compiling module 'program_counter'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\program_counter.v":23)
-Compiling module 'instruction_memory(INIT_FILE="uart_hello.hex")'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\instruction_memory.v":24)
+Compiling module 'instruction_memory(INIT_FILE="uart_debug.hex")'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\instruction_memory.v":24)
 Extracting RAM for identifier 'mem'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\instruction_memory.v":32)
 Compiling module 'instruction_decoder'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\instruction_decoder.v":10)
 Compiling module 'imm_gen'("C:\Users\dengiken-admin\Documents\RISK_V_fpga\src\imm_gen.v":10)
