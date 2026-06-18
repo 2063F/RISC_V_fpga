@@ -18,19 +18,29 @@
 `define OP_SYSTEM   7'b1110011   // System (ECALL, EBREAK)
 
 // =========================================================================
-// ALU Operation Codes
+// ALU Operation Codes (5-bit width)
 // =========================================================================
-`define ALU_ADD     4'd0
-`define ALU_SUB     4'd1
-`define ALU_AND     4'd2
-`define ALU_OR      4'd3
-`define ALU_XOR     4'd4
-`define ALU_SLL     4'd5    // Shift Left Logical
-`define ALU_SRL     4'd6    // Shift Right Logical
-`define ALU_SRA     4'd7    // Shift Right Arithmetic
-`define ALU_SLT     4'd8    // Set Less Than (signed)
-`define ALU_SLTU    4'd9    // Set Less Than (unsigned)
-`define ALU_PASS_B  4'd10   // Pass operand B through (for LUI)
+`define ALU_ADD     5'd0
+`define ALU_SUB     5'd1
+`define ALU_AND     5'd2
+`define ALU_OR      5'd3
+`define ALU_XOR     5'd4
+`define ALU_SLL     5'd5    // Shift Left Logical
+`define ALU_SRL     5'd6    // Shift Right Logical
+`define ALU_SRA     5'd7    // Shift Right Arithmetic
+`define ALU_SLT     5'd8    // Set Less Than (signed)
+`define ALU_SLTU    5'd9    // Set Less Than (unsigned)
+`define ALU_PASS_B  5'd10   // Pass operand B through (for LUI)
+`define ALU_MUL     5'd11   // mul
+`define ALU_MULH    5'd12   // mulh
+`define ALU_MULHSU  5'd13   // mulhsu
+`define ALU_MULHU   5'd14   // mulhu
+`define ALU_DIV     5'd15   // div
+`define ALU_DIVU    5'd16   // divu
+`define ALU_REM     5'd17   // rem
+`define ALU_REMU    5'd18   // remu
+
+
 
 // =========================================================================
 // funct3 for Branch instructions
@@ -68,6 +78,19 @@
 // =========================================================================
 `define FUNCT7_NORMAL  7'b0000000   // ADD, SRL
 `define FUNCT7_ALT     7'b0100000   // SUB, SRA
+`define FUNCT7_MEXT    7'b0000001   // RV32M Extension
+
+// =========================================================================
+// funct3 for RV32M instructions
+// =========================================================================
+`define FUNCT3_MUL      3'b000
+`define FUNCT3_MULH     3'b001
+`define FUNCT3_MULHSU   3'b010
+`define FUNCT3_MULHU    3'b011
+`define FUNCT3_DIV      3'b100
+`define FUNCT3_DIVU     3'b101
+`define FUNCT3_REM      3'b110
+`define FUNCT3_REMU     3'b111
 
 // =========================================================================
 // Immediate type encoding (for immediate generator)

@@ -45,7 +45,9 @@ module tb_cpu_top;
         .mem_write_en   (mem_write_en),
         .mem_read_en    (mem_read_en),
         .mem_read_data  (mem_read_data),
-        .debug_pc       (debug_pc)
+        .uart_tx_pin    (),
+        .debug_pc       (debug_pc),
+        .debug_x1       ()
     );
 
     // Clock generation: 50 MHz (20ns period)
@@ -89,15 +91,17 @@ module tb_cpu_top;
         // 2: ADD  x3, x1, x2      -> 32'h002081B3 (x3 = 30)
         // 3: SUB  x4, x3, x1      -> 32'h40118233 (x4 = 20)
         // 4: LUI  x5, 0x12345     -> 32'h123452B7 (x5 = 0x12345000)
-        // 5: NOP                  -> 32'h00000013
-        // 6: NOP                  -> 32'h00000013
+        // 5: MUL  x6, x1, x2      -> 32'h02208333 (x6 = 10 * 20 = 200)
+        // 6: DIV  x7, x2, x1      -> 32'h021143b3 (x7 = 20 / 10 = 2)
+        // 7: NOP                  -> 32'h00000013
         uut.imem.mem[0] = 32'h00A00093;
         uut.imem.mem[1] = 32'h01400113;
         uut.imem.mem[2] = 32'h002081B3;
         uut.imem.mem[3] = 32'h40118233;
         uut.imem.mem[4] = 32'h123452B7;
-        uut.imem.mem[5] = 32'h00000013;
-        uut.imem.mem[6] = 32'h00000013;
+        uut.imem.mem[5] = 32'h02208333;
+        uut.imem.mem[6] = 32'h021143b3;
+        uut.imem.mem[7] = 32'h00000013;
 
         // Apply reset
         #25;
@@ -132,7 +136,17 @@ module tb_cpu_top;
         $display("[PC=%0d] Executed LUI x5, 0x12345", debug_pc - 4);
         check_reg(5, 32'h12345000, "x5 = 0x12345000");
 
-        // Cycle 6: NOP (PC=20)
+        // Cycle 6: MUL x6, x1, x2 (PC=20)
+        #20;
+        $display("[PC=%0d] Executed MUL x6, x1, x2", debug_pc - 4);
+        check_reg(6, 32'd200, "x6 = x1 * x2");
+
+        // Cycle 7: DIV x7, x2, x1 (PC=24)
+        #20;
+        $display("[PC=%0d] Executed DIV x7, x2, x1", debug_pc - 4);
+        check_reg(7, 32'd2, "x7 = x2 / x1");
+
+        // Cycle 8: NOP (PC=28)
         #20;
         
         $display("\n=== Summary: %0d passed, %0d failed ===", pass_count, fail_count);

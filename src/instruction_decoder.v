@@ -20,7 +20,7 @@ module instruction_decoder (
     output reg  [2:0]  imm_type,
 
     // ALU control
-    output reg  [3:0]  alu_op,
+    output reg  [4:0]  alu_op,
     output reg         alu_src_b, // 0: rs2, 1: immediate
 
     // Branch/Jump control
@@ -64,17 +64,31 @@ module instruction_decoder (
                 reg_write = 1'b1;
                 alu_src_b = 1'b0; // Use rs2
                 wb_sel    = 2'd0;
-                case (funct3)
-                    `FUNCT3_ADD_SUB: alu_op = (funct7 == `FUNCT7_ALT) ? `ALU_SUB : `ALU_ADD;
-                    `FUNCT3_SLL:     alu_op = `ALU_SLL;
-                    `FUNCT3_SLT:     alu_op = `ALU_SLT;
-                    `FUNCT3_SLTU:    alu_op = `ALU_SLTU;
-                    `FUNCT3_XOR:     alu_op = `ALU_XOR;
-                    `FUNCT3_SRL_SRA: alu_op = (funct7 == `FUNCT7_ALT) ? `ALU_SRA : `ALU_SRL;
-                    `FUNCT3_OR:      alu_op = `ALU_OR;
-                    `FUNCT3_AND:     alu_op = `ALU_AND;
-                    default:         alu_op = `ALU_ADD;
-                endcase
+                if (funct7 == `FUNCT7_MEXT) begin
+                    case (funct3)
+                        `FUNCT3_MUL:    alu_op = `ALU_MUL;
+                        `FUNCT3_MULH:   alu_op = `ALU_MULH;
+                        `FUNCT3_MULHSU: alu_op = `ALU_MULHSU;
+                        `FUNCT3_MULHU:  alu_op = `ALU_MULHU;
+                        `FUNCT3_DIV:    alu_op = `ALU_DIV;
+                        `FUNCT3_DIVU:   alu_op = `ALU_DIVU;
+                        `FUNCT3_REM:    alu_op = `ALU_REM;
+                        `FUNCT3_REMU:   alu_op = `ALU_REMU;
+                        default:        alu_op = `ALU_ADD;
+                    endcase
+                end else begin
+                    case (funct3)
+                        `FUNCT3_ADD_SUB: alu_op = (funct7 == `FUNCT7_ALT) ? `ALU_SUB : `ALU_ADD;
+                        `FUNCT3_SLL:     alu_op = `ALU_SLL;
+                        `FUNCT3_SLT:     alu_op = `ALU_SLT;
+                        `FUNCT3_SLTU:    alu_op = `ALU_SLTU;
+                        `FUNCT3_XOR:     alu_op = `ALU_XOR;
+                        `FUNCT3_SRL_SRA: alu_op = (funct7 == `FUNCT7_ALT) ? `ALU_SRA : `ALU_SRL;
+                        `FUNCT3_OR:      alu_op = `ALU_OR;
+                        `FUNCT3_AND:     alu_op = `ALU_AND;
+                        default:         alu_op = `ALU_ADD;
+                    endcase
+                end
             end
 
             // ------------------------------------------------------------------

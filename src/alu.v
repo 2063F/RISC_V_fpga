@@ -15,11 +15,16 @@
 module alu (
     input  wire [31:0] a,        // Operand A (always from register)
     input  wire [31:0] b,        // Operand B (register or immediate)
-    input  wire [3:0]  alu_op,   // Operation select (see riscv_defines.vh)
+    input  wire [4:0]  alu_op,   // Operation select (see riscv_defines.vh)
 
     output reg  [31:0] result,   // Operation result
     output wire        zero      // 1 when result == 0 (used for branch)
 );
+
+    // Intermediate 64-bit results for multiplication
+    wire signed [63:0] mul_signed          = $signed(a) * $signed(b);
+    wire signed [63:0] mul_signed_unsigned = $signed(a) * $signed({1'b0, b});
+    wire        [63:0] mul_unsigned        = {32'd0, a} * {32'd0, b};
 
     // zero flag: used by BEQ/BNE branch logic in control unit
     assign zero = (result == 32'd0);
@@ -83,6 +88,54 @@ module alu (
             //         Used for LUI: rd = imm (no addition needed)
             // ------------------------------------------------------------------
             `ALU_PASS_B: result = b;
+
+            // ------------------------------------------------------------------
+            // M Extension: Multiplication (MUL, MULH, MULHSU, MULHU)
+            // ------------------------------------------------------------------
+            `ALU_MUL:    result = a * b;
+            `ALU_MULH:   result = mul_signed[63:32];
+            `ALU_MULHSU: result = mul_signed_unsigned[63:32];
+            `ALU_MULHU:  result = mul_unsigned[63:32];
+
+            // ------------------------------------------------------------------
+            // M Extension: Division and Remainder (DIV, DIVU, REM, REMU)
+            // Handle divide-by-zero and signed overflow constraints.
+            // ------------------------------------------------------------------
+            `ALU_DIV: begin
+                if (b == 32'd0) begin
+                    result = 32'hFFFF_FFFF;
+                end else if (a == 32'h8000_0000 && b == 32'hFFFF_FFFF) begin
+                    result = 32'h8000_0000;
+                end else begin
+                    result = $signed(a) / $signed(b);
+                end
+            end
+
+            `ALU_DIVU: begin
+                if (b == 32'd0) begin
+                    result = 32'hFFFF_FFFF;
+                end else begin
+                    result = a / b;
+                end
+            end
+
+            `ALU_REM: begin
+                if (b == 32'd0) begin
+                    result = a;
+                end else if (a == 32'h8000_0000 && b == 32'hFFFF_FFFF) begin
+                    result = 32'd0;
+                end else begin
+                    result = $signed(a) % $signed(b);
+                end
+            end
+
+            `ALU_REMU: begin
+                if (b == 32'd0) begin
+                    result = a;
+                end else begin
+                    result = a % b;
+                end
+            end
 
             default:     result = 32'd0;
         endcase
