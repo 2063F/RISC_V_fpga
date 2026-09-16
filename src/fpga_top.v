@@ -13,7 +13,7 @@
 // =============================================================================
 
 module fpga_top #(
-    parameter INIT_FILE = "C:/Users/dengiken-admin/Documents/RISK_V_fpga/examples/button_led.hex"
+    parameter INIT_FILE = "examples/loop55.hex"
 ) (
     input  wire       clk,       // 50 MHz onboard crystal oscillator
     input  wire       rst_btn,   // Reset button (active high)
