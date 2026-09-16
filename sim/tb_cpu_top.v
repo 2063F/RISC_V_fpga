@@ -112,7 +112,7 @@ module tb_cpu_top;
         // Wait for instructions to execute.
         
         // Cycle 1: ADDI x1, x0, 10 (PC=0)
-        #20;
+        #40;
         $display("[PC=%0d] Executed ADDI x1, x0, 10", debug_pc - 4);
         check_reg(1, 32'd10, "x1 initialization");
 

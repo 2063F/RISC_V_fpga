@@ -28,6 +28,11 @@ def jal(rd, offset):
            (((off >> 1) & 0x3FF) << 21) | (rd << 7) | 0x6F
 def jalr(rd, rs1, offset=0): return ((offset & 0xFFF) << 20) | (rs1 << 15) | (0 << 12) | (rd << 7) | 0x67
 
+def mul(rd, rs1, rs2):
+    return (0x01 << 25) | (rs2 << 20) | (rs1 << 15) | (0 << 12) | (rd << 7) | 0x33
+def div(rd, rs1, rs2):
+    return (0x01 << 25) | (rs2 << 20) | (rs1 << 15) | (4 << 12) | (rd << 7) | 0x33
+
 def li_macro(rd, imm):
     imm = imm & 0xFFFFFFFF
     imm_s = imm if imm < 0x80000000 else imm - 0x100000000
@@ -47,8 +52,10 @@ def li_macro(rd, imm):
 # x11: UART ステータスレジスタアドレス (0x80000014)
 # x1: ra (戻りアドレス)
 # x2: sp (スタック代わりに一時変数保存などで退避用)
-# x8: デバッグ対象レジスタ1 (x8)
-# x9: デバッグ対象レジスタ2 (x9)
+# x8: 被乗数/被除数
+# x9: 乗数/除数
+# x21: 積 (mul)
+# x22: 商 (div)
 # x20: ループカウンタ用
 
 UART_TX_ADDR = 0x80000010
@@ -69,70 +76,80 @@ for inst in li_macro(10, UART_TX_ADDR): emit(inst)
 for inst in li_macro(11, UART_STAT_ADDR): emit(inst)
 
 # テスト用の計算レジスタに初期値をセット
-emit(addi(8, 0, 0x55))    # x8 = 0x55 (85)
-emit(addi(9, 0, 0xAA))    # x9 = 0xAA (170)
+emit(addi(8, 0, 15))      # x8 = 15
+emit(addi(9, 0, 3))       # x9 = 3
 
 # メインループ開始位置
 main_loop_pc = current_pc()
 
-# "x8=" 送信
-# 'x' = 0x78
-emit(addi(5, 0, 0x78))
-placeholders[len(instructions)] = ("send_byte", "jal")
-emit(0xDEADBEEF)
-# '8' = 0x38
-emit(addi(5, 0, 0x38))
-placeholders[len(instructions)] = ("send_byte", "jal")
-emit(0xDEADBEEF)
-# '=' = 0x3D
-emit(addi(5, 0, 0x3D))
-placeholders[len(instructions)] = ("send_byte", "jal")
-emit(0xDEADBEEF)
+# 演算実行
+emit(mul(21, 8, 9))       # x21 = x8 * x9 (積)
+emit(div(22, 8, 9))       # x22 = x8 / x9 (商)
 
-# x8 の値を hex 送信
-emit(addi(12, 8, 0)) # 引数退避 (x12 = x8)
+# "A=" 送信
+emit(addi(5, 0, 0x41)) # 'A'
+placeholders[len(instructions)] = ("send_byte", "jal")
+emit(0xDEADBEEF)
+emit(addi(5, 0, 0x3D)) # '='
+placeholders[len(instructions)] = ("send_byte", "jal")
+emit(0xDEADBEEF)
+emit(addi(12, 8, 0)) # x12 = A
 placeholders[len(instructions)] = ("print_hex", "jal")
 emit(0xDEADBEEF)
 
-# ' ' (スペース) = 0x20
-emit(addi(5, 0, 0x20))
+# "  MUL=" 送信
+emit(addi(5, 0, 0x20)) # ' '
 placeholders[len(instructions)] = ("send_byte", "jal")
 emit(0xDEADBEEF)
-
-# "x9=" 送信
-# 'x' = 0x78
-emit(addi(5, 0, 0x78))
+emit(addi(5, 0, 0x4D)) # 'M'
 placeholders[len(instructions)] = ("send_byte", "jal")
 emit(0xDEADBEEF)
-# '9' = 0x39
-emit(addi(5, 0, 0x39))
+emit(addi(5, 0, 0x55)) # 'U'
 placeholders[len(instructions)] = ("send_byte", "jal")
 emit(0xDEADBEEF)
-# '=' = 0x3D
-emit(addi(5, 0, 0x3D))
+emit(addi(5, 0, 0x4C)) # 'L'
 placeholders[len(instructions)] = ("send_byte", "jal")
 emit(0xDEADBEEF)
-
-# x9 の値を hex 送信
-emit(addi(12, 9, 0)) # 引数退避 (x12 = x9)
+emit(addi(5, 0, 0x3D)) # '='
+placeholders[len(instructions)] = ("send_byte", "jal")
+emit(0xDEADBEEF)
+emit(addi(12, 21, 0)) # x12 = mul
 placeholders[len(instructions)] = ("print_hex", "jal")
 emit(0xDEADBEEF)
 
-# '\r' = 0x0D
+# "  DIV=" 送信
+emit(addi(5, 0, 0x20)) # ' '
+placeholders[len(instructions)] = ("send_byte", "jal")
+emit(0xDEADBEEF)
+emit(addi(5, 0, 0x44)) # 'D'
+placeholders[len(instructions)] = ("send_byte", "jal")
+emit(0xDEADBEEF)
+emit(addi(5, 0, 0x49)) # 'I'
+placeholders[len(instructions)] = ("send_byte", "jal")
+emit(0xDEADBEEF)
+emit(addi(5, 0, 0x56)) # 'V'
+placeholders[len(instructions)] = ("send_byte", "jal")
+emit(0xDEADBEEF)
+emit(addi(5, 0, 0x3D)) # '='
+placeholders[len(instructions)] = ("send_byte", "jal")
+emit(0xDEADBEEF)
+emit(addi(12, 22, 0)) # x12 = div
+placeholders[len(instructions)] = ("print_hex", "jal")
+emit(0xDEADBEEF)
+
+# '\r\n' 送信
 emit(addi(5, 0, 0x0D))
 placeholders[len(instructions)] = ("send_byte", "jal")
 emit(0xDEADBEEF)
-# '\n' = 0x0A
 emit(addi(5, 0, 0x0A))
 placeholders[len(instructions)] = ("send_byte", "jal")
 emit(0xDEADBEEF)
 
-# テスト値更新 (x8 = x8 + 1, x9 = x9 - 1)
-emit(addi(8, 8, 1))
-emit(addi(9, 9, -1))
+# テスト値更新 (A = A + 5)
+emit(addi(8, 8, 5))
 
 # 遅延ウェイトループ (約 5,000,000 サイクル ➔ 0.1秒)
-for inst in li_macro(20, 500000): emit(inst)
+for inst in li_macro(20, 5000000): emit(inst)
 wait_loop_pc = current_pc()
 emit(addi(20, 20, -1))
 # bne x20, x0, wait_loop

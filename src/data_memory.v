@@ -10,9 +10,9 @@
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
 // Tool Versions: 
 // Description: Data Memory (RAM) module supporting byte, halfword, and word
-//              reads and writes (16 KB = 4096 words of 32-bit).
-//              Maps to 0x0001_0000 - 0x0001_3FFF.
-// 
+//              reads and writes in a 128-word (512-byte) scratch RAM.
+//              The implemented region is 0x0001_0000 - 0x0001_01FF.
+//
 // Dependencies: riscv_defines.vh
 // 
 // Revision:
@@ -33,15 +33,16 @@ module data_memory (
     output reg  [31:0] read_data      // Read data (output formatted)
 );
 
-    // 512 B data memory (128 words of 32-bit)
-    reg [31:0] mem [0:127];
+    // 16384-word data RAM (64 KB total)
+    reg [31:0] mem [0:16383];
 
     // Address Decode
-    // Check if the address falls within 0x0001_0000 - 0x0001_3FFF
-    wire addr_valid = (addr >= 32'h0001_0000) && (addr <= 32'h0001_3FFF);
-    
-    // Index within the 128-word memory (lower 7 bits of word index)
-    wire [6:0]  word_addr = addr[8:2];
+    // Only the lower 64 KB of the 0x0001_0000 region are implemented,
+    // so valid addresses are 0x0001_0000 - 0x0001_FFFF.
+    wire addr_valid = (addr >= 32'h0001_0000) && (addr <= 32'h0001_FFFF);
+
+    // Index within the 16384-word memory (bits [15:2] of the byte address)
+    wire [13:0] word_addr = addr[15:2];
     wire [1:0]  byte_offset = addr[1:0];
 
     // =========================================================================
@@ -148,7 +149,7 @@ module data_memory (
     // =========================================================================
     integer i;
     initial begin
-        for (i = 0; i < 128; i = i + 1) begin
+        for (i = 0; i < 16384; i = i + 1) begin
             mem[i] = 32'd0;
         end
     end

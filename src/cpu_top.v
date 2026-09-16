@@ -10,9 +10,9 @@
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
 // Tool Versions: 
 // Description: Top level CPU module connecting datapath and control unit.
-//              Handles single cycle execution of basic instructions.
+//              Handles a two-stage pipeline (fetch + execute/writeback).
 // 
-// Dependencies: riscv_defines.vh, program_counter.v, instruction_memory.v,
+// Dependencies: riscv_defines.vh, instruction_memory.v,
 //               instruction_decoder.v, imm_gen.v, register_file.v,
 //               control_unit.v, alu.v
 // 
@@ -39,18 +39,24 @@ module cpu_top #(
     
     // UART
     output wire        uart_tx_pin,
+    input  wire        uart_rx_pin,
     
     // Debug ports
     output wire [31:0] debug_pc,
     output wire [31:0] debug_x1
 );
 
+    localparam [31:0] NOP_INST = 32'h0000_0013;
+
     // =========================================================================
     // Internal Signals
     // =========================================================================
-    wire [31:0] pc;
+    reg  [31:0] pc;
+    wire [31:0] fetched_inst;
+    reg  [31:0] ifid_pc;
+    reg  [31:0] ifid_inst;
+    reg         ifid_valid;
     wire [31:0] next_pc;
-    wire [31:0] inst;
     
     // Decoder outputs
     wire [4:0]  rs1;
@@ -83,21 +89,33 @@ module cpu_top #(
     reg  [31:0] alu_in_b;
     wire [31:0] alu_result;
     wire        alu_zero;
+    reg  [31:0] next_pc_temp;
+
+    wire execute_valid = ifid_valid;
+    wire branch_or_jump = (pc_sel != 2'd0);
 
     // =========================================================================
     // Debug assignment
     // =========================================================================
-    assign debug_pc = pc;
+    assign debug_pc = execute_valid ? (ifid_pc + 32'd4) : pc;
 
     // =========================================================================
     // Memory Interface / Address Decoding Outputs
     // =========================================================================
-    wire dmem_sel  = (alu_result >= 32'h0001_0000) && (alu_result <= 32'h0001_3FFF);
+    // The implemented data RAM is 64 KB, so the valid scratch-memory region is
+    // 0x0001_0000 - 0x0001_FFFF.
+    wire imem_sel  = (alu_result < 32'h0000_8000);
+    wire dmem_sel  = (alu_result >= 32'h0001_0000) && (alu_result <= 32'h0001_FFFF);
     // MMIO: 0x8000_0010 = UART TX data register
     //       0x8000_0014 = UART TX status register (bit0 = busy)
+    //       0x8000_0018 = UART RX data register
+    //       0x8000_001C = UART RX status register (bit0 = ready)
     wire mmio_uart_tx_sel    = (alu_result == 32'h8000_0010);
     wire mmio_uart_stat_sel  = (alu_result == 32'h8000_0014);
-    wire mmio_sel            = mmio_uart_tx_sel || mmio_uart_stat_sel;
+    wire mmio_uart_rx_sel    = (alu_result == 32'h8000_0018);
+    wire mmio_uart_rx_stat_sel = (alu_result == 32'h8000_001C);
+    wire mmio_sel            = mmio_uart_tx_sel || mmio_uart_stat_sel || 
+                               mmio_uart_rx_sel || mmio_uart_rx_stat_sel;
 
     assign mem_addr       = alu_result;
     assign mem_write_data = rs2_data;
@@ -121,28 +139,40 @@ module cpu_top #(
     );
 
     // =========================================================================
+    // UART RX MMIO
+    // =========================================================================
+    wire [7:0] uart_rx_data;
+    wire       uart_rx_ready;
+    // rx_clear fires when CPU reads UART RX data register (LW to 0x8000_0018)
+    wire uart_rx_clear = mem_read && mmio_uart_rx_sel;
+
+    uart_rx uart_rx_inst (
+        .clk      (clk),
+        .rst_n    (rst_n),
+        .rx_pin   (uart_rx_pin),
+        .rx_clear (uart_rx_clear),
+        .rx_data  (uart_rx_data),
+        .rx_ready (uart_rx_ready)
+    );
+
+    // =========================================================================
     // Module Instantiations
     // =========================================================================
     
-    // 1. Program Counter
-    program_counter pc_reg (
-        .clk    (clk),
-        .rst_n  (rst_n),
-        .pc_in  (next_pc),
-        .pc_out (pc)
-    );
-    
-    // 2. Instruction Memory
+    // 1. Instruction Memory / .rodata Dual-Port ROM
+    wire [31:0] rom_data_read;
     instruction_memory #(
         .INIT_FILE (INIT_FILE)
     ) imem (
-        .addr (pc),
-        .dout (inst)
+        .addr   (pc),
+        .dout   (fetched_inst),
+        .addr_b (alu_result),
+        .dout_b (rom_data_read)
     );
     
-    // 3. Instruction Decoder
+    // 2. Instruction Decoder
     instruction_decoder dec (
-        .inst      (inst),
+        .inst      (ifid_inst),
         .rs1       (rs1),
         .rs2       (rs2),
         .rd        (rd),
@@ -157,14 +187,14 @@ module cpu_top #(
         .wb_sel    (wb_sel)
     );
     
-    // 4. Immediate Generator
+    // 3. Immediate Generator
     imm_gen igen (
-        .inst     (inst),
+        .inst     (ifid_inst),
         .imm_type (imm_type),
         .imm      (imm)
     );
     
-    // 5. Register File
+    // 4. Register File
     register_file regfile (
         .clk        (clk),
         .rst        (!rst_n),
@@ -178,10 +208,10 @@ module cpu_top #(
         .dbg_x1     (debug_x1)
     );
     
-    // 6. Control Unit
+    // 5. Control Unit
     control_unit ctrl (
-        .opcode     (inst[6:0]),
-        .funct3     (inst[14:12]),
+        .opcode     (ifid_inst[6:0]),
+        .funct3     (ifid_inst[14:12]),
         .branch     (branch),
         .jump       (jump),
         .alu_zero   (alu_zero),
@@ -190,7 +220,7 @@ module cpu_top #(
         .pc_sel     (pc_sel)
     );
     
-    // 7. ALU
+    // 6. ALU
     alu alu_inst (
         .a      (alu_in_a),
         .b      (alu_in_b),
@@ -199,7 +229,7 @@ module cpu_top #(
         .zero   (alu_zero)
     );
 
-    // 8. Internal Data Memory (RAM)
+    // 7. Internal Data Memory (RAM)
     wire [31:0] internal_mem_read_data;
 
     data_memory dmem (
@@ -208,7 +238,7 @@ module cpu_top #(
         .write_data (rs2_data),
         .write_en   (mem_write && dmem_sel),
         .read_en    (mem_read && dmem_sel),
-        .funct3     (inst[14:12]),
+        .funct3     (ifid_inst[14:12]),
         .read_data  (internal_mem_read_data)
     );
 
@@ -219,7 +249,7 @@ module cpu_top #(
     // ALU Operand A Select MUX
     always @(*) begin
         if (alu_src_a) begin
-            alu_in_a = pc;
+            alu_in_a = ifid_pc;
         end else begin
             alu_in_a = rs1_data;
         end
@@ -236,11 +266,49 @@ module cpu_top #(
     
     // Register Write-back Select MUX
     reg [31:0] selected_mem_data;
+    wire [1:0] mem_byte_offset = alu_result[1:0];
     always @(*) begin
         if (dmem_sel) begin
             selected_mem_data = internal_mem_read_data;
+        end else if (imem_sel) begin
+            // Byte/halfword selection for .rodata loads (LBU, LB, LHU, LH, LW)
+            case (ifid_inst[14:12])
+                3'b000: begin // LB - signed byte
+                    case (mem_byte_offset)
+                        2'b00: selected_mem_data = {{24{rom_data_read[7]}},  rom_data_read[7:0]};
+                        2'b01: selected_mem_data = {{24{rom_data_read[15]}}, rom_data_read[15:8]};
+                        2'b10: selected_mem_data = {{24{rom_data_read[23]}}, rom_data_read[23:16]};
+                        2'b11: selected_mem_data = {{24{rom_data_read[31]}}, rom_data_read[31:24]};
+                    endcase
+                end
+                3'b100: begin // LBU - unsigned byte
+                    case (mem_byte_offset)
+                        2'b00: selected_mem_data = {24'd0, rom_data_read[7:0]};
+                        2'b01: selected_mem_data = {24'd0, rom_data_read[15:8]};
+                        2'b10: selected_mem_data = {24'd0, rom_data_read[23:16]};
+                        2'b11: selected_mem_data = {24'd0, rom_data_read[31:24]};
+                    endcase
+                end
+                3'b001: begin // LH - signed halfword
+                    if (mem_byte_offset[1] == 1'b0)
+                        selected_mem_data = {{16{rom_data_read[15]}}, rom_data_read[15:0]};
+                    else
+                        selected_mem_data = {{16{rom_data_read[31]}}, rom_data_read[31:16]};
+                end
+                3'b101: begin // LHU - unsigned halfword
+                    if (mem_byte_offset[1] == 1'b0)
+                        selected_mem_data = {16'd0, rom_data_read[15:0]};
+                    else
+                        selected_mem_data = {16'd0, rom_data_read[31:16]};
+                end
+                default: selected_mem_data = rom_data_read; // LW
+            endcase
         end else if (mmio_uart_stat_sel) begin
             selected_mem_data = {31'd0, uart_busy};
+        end else if (mmio_uart_rx_sel) begin
+            selected_mem_data = {24'd0, uart_rx_data};
+        end else if (mmio_uart_rx_stat_sel) begin
+            selected_mem_data = {31'd0, uart_rx_ready};
         end else begin
             selected_mem_data = mem_read_data;
         end
@@ -250,26 +318,51 @@ module cpu_top #(
         case (wb_sel)
             2'd0:    reg_write_data = alu_result;
             2'd1:    reg_write_data = selected_mem_data;
-            2'd2:    reg_write_data = pc + 32'd4;
+            2'd2:    reg_write_data = ifid_pc + 32'd4;
             default: reg_write_data = alu_result;
         endcase
     end
-    
+
     // Next PC Select MUX
     // JALR target address lower bit must be cleared to 0 (RISC-V spec)
     wire [31:0] jalr_target = (rs1_data + imm) & 32'hFFFF_FFFE;
-    wire [31:0] branch_target = pc + imm;
-    wire [31:0] pc_plus_4 = pc + 32'd4;
-    
-    reg [31:0] next_pc_temp;
+    wire [31:0] branch_target = ifid_pc + imm;
+
     always @(*) begin
-        case (pc_sel)
-            2'd0:    next_pc_temp = pc_plus_4;
-            2'd1:    next_pc_temp = branch_target;
-            2'd2:    next_pc_temp = jalr_target;
-            default: next_pc_temp = pc_plus_4;
-        endcase
+        if (branch_or_jump) begin
+            case (pc_sel)
+                2'd1:    next_pc_temp = branch_target;
+                2'd2:    next_pc_temp = jalr_target;
+                default: next_pc_temp = pc + 32'd4;
+            endcase
+        end else begin
+            next_pc_temp = pc + 32'd4;
+        end
     end
     assign next_pc = next_pc_temp;
+
+    // =============x============================================================
+    // Pipeline Registers
+    // =========================================================================
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            pc         <= 32'd0;
+            ifid_pc    <= 32'd0;
+            ifid_inst  <= NOP_INST;
+            ifid_valid <= 1'b0;
+        end else begin
+            pc <= next_pc;
+
+            if (branch_or_jump) begin
+                ifid_pc    <= 32'd0;
+                ifid_inst  <= NOP_INST;
+                ifid_valid <= 1'b0;
+            end else begin
+                ifid_pc    <= pc;
+                ifid_inst  <= fetched_inst;
+                ifid_valid <= 1'b1;
+            end
+        end
+    end
 
 endmodule

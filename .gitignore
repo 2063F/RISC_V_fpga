@@ -1,0 +1,10 @@
+# Gowin EDA synthesis/PnR build outputs (regenerate via build.tcl)
+/impl/
+gowin_project/*/impl/
+*.gprj.user
+
+# Icarus Verilog simulation build outputs
+sim/*.out
+
+# Waveform dumps
+*.vcd

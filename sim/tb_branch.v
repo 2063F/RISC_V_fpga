@@ -155,7 +155,7 @@ module tb_branch;
         //   = 3 + 10*2 + 9 + 1 + 1 = 34 cycles (ample margin: 40)
         // -------------------------------------------------------
         $display("--- Test 1: BLT loop (1+2+...+10) ---");
-        wait_cycles(40);
+        wait_cycles(42);
         check_reg(1, 32'd55, "sum = 55");
         check_reg(2, 32'd11, "i   = 11 (loop stopped)");
 
@@ -163,14 +163,14 @@ module tb_branch;
         // Test 2: BEQ branch taken
         // -------------------------------------------------------
         $display("\n--- Test 2: BEQ branch taken ---");
-        wait_cycles(6);
+        wait_cycles(8);
         check_reg(6, 32'd42,  "x6=42 (branch skipped 99)");
 
         // -------------------------------------------------------
         // Test 3: JAL
         // -------------------------------------------------------
         $display("\n--- Test 3: JAL jump and link ---");
-        wait_cycles(6);
+        wait_cycles(7);
         check_reg(7, 32'd60,  "x7=60 (return addr)");
         check_reg(8, 32'd77,  "x8=77 (JAL skipped ADDI 1)");
 

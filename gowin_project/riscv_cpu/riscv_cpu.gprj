@@ -1,20 +1,21 @@
-<?xml version="1" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE gowin-fpga-project>
 <Project>
     <Template>FPGA</Template>
     <Version>5</Version>
     <Device name="GW5A-25A" pn="GW5A-LV25MG121NC1/I0">gw5a25a-002</Device>
     <FileList>
-        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/alu.v" type="file.verilog" enable="1"/>
-        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/control_unit.v" type="file.verilog" enable="1"/>
-        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/cpu_top.v" type="file.verilog" enable="1"/>
-        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/data_memory.v" type="file.verilog" enable="1"/>
         <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/fpga_top.v" type="file.verilog" enable="1"/>
-        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/imm_gen.v" type="file.verilog" enable="1"/>
+        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/cpu_top.v" type="file.verilog" enable="1"/>
         <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/instruction_decoder.v" type="file.verilog" enable="1"/>
-        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/instruction_memory.v" type="file.verilog" enable="1"/>
-        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/program_counter.v" type="file.verilog" enable="1"/>
+        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/alu.v" type="file.verilog" enable="1"/>
         <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/register_file.v" type="file.verilog" enable="1"/>
+        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/imm_gen.v" type="file.verilog" enable="1"/>
+        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/program_counter.v" type="file.verilog" enable="1"/>
+        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/instruction_memory.v" type="file.verilog" enable="1"/>
+        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/control_unit.v" type="file.verilog" enable="1"/>
+        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/data_memory.v" type="file.verilog" enable="1"/>
+        <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/board_io.v" type="file.verilog" enable="1"/>
         <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/src/uart_tx.v" type="file.verilog" enable="1"/>
         <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/constraints/tang_primer_25k.cst" type="file.cst" enable="1"/>
         <File path="C:/Users/dengiken-admin/Documents/RISK_V_fpga/constraints/timing.sdc" type="file.sdc" enable="1"/>

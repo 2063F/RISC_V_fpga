@@ -5,13 +5,16 @@
 // Features:
 // - Instantiates the single-cycle RISC-V CPU.
 // - Loads the loop55.hex test program (1+2+...+10 = 55).
+// - Exposes simple MMIO for LED and button access.
 // - Displays status on the 2 onboard LEDs:
 //   - LED[0]: Blinks at ~1Hz to show that the system clock is running (heartbeat).
 //   - LED[1]: Turns ON constantly if the CPU successfully computes x1 = 55.
 //             If the CPU has not finished or failed, LED[1] is OFF.
 // =============================================================================
 
-module fpga_top (
+module fpga_top #(
+    parameter INIT_FILE = "C:/Users/dengiken-admin/Documents/RISK_V_fpga/examples/button_led.hex"
+) (
     input  wire       clk,       // 50 MHz onboard crystal oscillator
     input  wire       rst_btn,   // Reset button (active high)
     input  wire       user_btn,  // User button (active high)
@@ -28,22 +31,40 @@ module fpga_top (
     // =========================================================================
     // CPU Instantiation
     // =========================================================================
+    wire [31:0] mem_addr;
+    wire [31:0] mem_write_data;
+    wire        mem_write_en;
+    wire        mem_read_en;
+    wire [31:0] mem_read_data;
     wire [31:0] debug_pc;
     wire [31:0] debug_x1;
+    wire        mmio_led_ctrl;
 
     cpu_top #(
-        .INIT_FILE("uart_debug.hex")
+        .INIT_FILE(INIT_FILE)
     ) cpu (
         .clk            (clk),
         .rst_n          (cpu_rst_n),
-        .mem_addr       (),
-        .mem_write_data (),
-        .mem_write_en   (),
-        .mem_read_en    (),
-        .mem_read_data  (32'd0),
+        .mem_addr       (mem_addr),
+        .mem_write_data (mem_write_data),
+        .mem_write_en   (mem_write_en),
+        .mem_read_en    (mem_read_en),
+        .mem_read_data  (mem_read_data),
         .uart_tx_pin    (uart_tx),
         .debug_pc       (debug_pc),
         .debug_x1       (debug_x1)
+    );
+
+    board_io io_bridge (
+        .clk        (clk),
+        .rst_n      (cpu_rst_n),
+        .addr       (mem_addr),
+        .write_data (mem_write_data),
+        .write_en   (mem_write_en),
+        .read_en    (mem_read_en),
+        .user_btn   (user_btn),
+        .read_data  (mem_read_data),
+        .led_ctrl   (mmio_led_ctrl)
     );
 
     // =========================================================================
@@ -69,7 +90,8 @@ module fpga_top (
             led[0] <= blink_counter[24];
 
             // LED[1] is ON if CPU has computed x1 = 55 (0x37)
-            if (debug_x1 == 32'd55) begin
+            // or software explicitly enables the MMIO LED overlay.
+            if (debug_x1 == 32'd55 || mmio_led_ctrl) begin
                 led[1] <= 1'b1;
             end else begin
                 led[1] <= 1'b0;

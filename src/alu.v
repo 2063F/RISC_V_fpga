@@ -26,10 +26,28 @@ module alu (
     wire signed [63:0] mul_signed_unsigned = $signed(a) * $signed({1'b0, b});
     wire        [63:0] mul_unsigned        = {32'd0, a} * {32'd0, b};
 
+    // Intermediate variables for custom restoring division
+    reg [31:0] div_abs_a;
+    reg [31:0] div_abs_b;
+    reg        div_sign_a;
+    reg        div_sign_b;
+    reg [31:0] div_quot;
+    reg [31:0] div_rem;
+    integer    div_idx;
+
     // zero flag: used by BEQ/BNE branch logic in control unit
     assign zero = (result == 32'd0);
 
     always @(*) begin
+        // Prevent latches by initializing local division regs
+        div_abs_a   = 32'd0;
+        div_abs_b   = 32'd0;
+        div_sign_a  = 1'b0;
+        div_sign_b  = 1'b0;
+        div_quot    = 32'd0;
+        div_rem     = 32'd0;
+        div_idx     = 0;
+
         case (alu_op)
             // ------------------------------------------------------------------
             // ADD: a + b
@@ -99,41 +117,47 @@ module alu (
 
             // ------------------------------------------------------------------
             // M Extension: Division and Remainder (DIV, DIVU, REM, REMU)
-            // Handle divide-by-zero and signed overflow constraints.
+            // Custom comb restoring division to ensure safe synthesis on Gowin.
             // ------------------------------------------------------------------
-            `ALU_DIV: begin
+            `ALU_DIV, `ALU_DIVU, `ALU_REM, `ALU_REMU: begin
+                // Check division by zero
                 if (b == 32'd0) begin
-                    result = 32'hFFFF_FFFF;
-                end else if (a == 32'h8000_0000 && b == 32'hFFFF_FFFF) begin
-                    result = 32'h8000_0000;
-                end else begin
-                    result = $signed(a) / $signed(b);
+                    if (alu_op == `ALU_DIV || alu_op == `ALU_DIVU)
+                        result = 32'hFFFF_FFFF;
+                    else
+                        result = a; // REM/REMU returns A
                 end
-            end
-
-            `ALU_DIVU: begin
-                if (b == 32'd0) begin
-                    result = 32'hFFFF_FFFF;
-                end else begin
-                    result = a / b;
+                // Check overflow (MIN_INT / -1)
+                else if ((alu_op == `ALU_DIV || alu_op == `ALU_REM) && a == 32'h8000_0000 && b == 32'hFFFF_FFFF) begin
+                    if (alu_op == `ALU_DIV)
+                        result = 32'h8000_0000;
+                    else
+                        result = 32'd0; // REM returns 0
                 end
-            end
-
-            `ALU_REM: begin
-                if (b == 32'd0) begin
-                    result = a;
-                end else if (a == 32'h8000_0000 && b == 32'hFFFF_FFFF) begin
-                    result = 32'd0;
-                end else begin
-                    result = $signed(a) % $signed(b);
-                end
-            end
-
-            `ALU_REMU: begin
-                if (b == 32'd0) begin
-                    result = a;
-                end else begin
-                    result = a % b;
+                else begin
+                    // Core Restoring Division Logic using module-scoped regs
+                    div_sign_a = a[31] && (alu_op == `ALU_DIV || alu_op == `ALU_REM);
+                    div_sign_b = b[31] && (alu_op == `ALU_DIV || alu_op == `ALU_REM);
+                    
+                    div_abs_a = div_sign_a ? -a : a;
+                    div_abs_b = div_sign_b ? -b : b;
+                    
+                    div_quot = 32'd0;
+                    div_rem  = 32'd0;
+                    
+                    for (div_idx = 31; div_idx >= 0; div_idx = div_idx - 1) begin
+                        div_rem = (div_rem << 1) | (div_abs_a[div_idx]);
+                        if (div_rem >= div_abs_b) begin
+                            div_rem = div_rem - div_abs_b;
+                            div_quot[div_idx] = 1'b1;
+                        end
+                    end
+                    
+                    if (alu_op == `ALU_DIV || alu_op == `ALU_DIVU) begin
+                        result = (div_sign_a ^ div_sign_b) ? -div_quot : div_quot;
+                    end else begin
+                        result = div_sign_a ? -div_rem : div_rem;
+                    end
                 end
             end
 

@@ -1,0 +1,9 @@
+{
+  "flags": "-I . -I src -I sim -f .slang/files.f",
+  "index": [
+    {
+      "dirs": ["src", "sim"]
+    }
+  ],
+  "build": ".slang/files.f"
+}
