@@ -7,7 +7,6 @@ src/fpga_top.v
 src/imm_gen.v
 src/instruction_decoder.v
 src/instruction_memory.v
-src/program_counter.v
 src/register_file.v
 src/uart_tx.v
 sim/tb_alu.v

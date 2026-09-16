@@ -10,8 +10,8 @@
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
 // Tool Versions: 
 // Description: Data Memory (RAM) module supporting byte, halfword, and word
-//              reads and writes in a 128-word (512-byte) scratch RAM.
-//              The implemented region is 0x0001_0000 - 0x0001_01FF.
+//              reads and writes in a 16384-word (64 KB) scratch RAM.
+//              The implemented region is 0x0001_0000 - 0x0001_FFFF.
 //
 // Dependencies: riscv_defines.vh
 // 

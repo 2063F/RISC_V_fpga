@@ -11,7 +11,6 @@
         <File path="../../src/alu.v" type="file.verilog" enable="1"/>
         <File path="../../src/register_file.v" type="file.verilog" enable="1"/>
         <File path="../../src/imm_gen.v" type="file.verilog" enable="1"/>
-        <File path="../../src/program_counter.v" type="file.verilog" enable="1"/>
         <File path="../../src/instruction_memory.v" type="file.verilog" enable="1"/>
         <File path="../../src/control_unit.v" type="file.verilog" enable="1"/>
         <File path="../../src/data_memory.v" type="file.verilog" enable="1"/>
