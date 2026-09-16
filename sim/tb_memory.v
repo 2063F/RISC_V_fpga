@@ -236,7 +236,10 @@ module tb_memory;
         // Run cycles and verify
         // =====================================================================
         $display("--- Initialization ---");
-        wait_cycles(4);  // Cycles 1-4: LUI x1, ADDI x2, ADDI x3, ADDI x4
+        // 2-stage pipeline: an instruction latched into ifid_inst at cycle N is
+        // written back to the register file at cycle N+1, so 5 cycles (not 4)
+        // are needed for the 4th instruction (ADDI x4) to complete writeback.
+        wait_cycles(5);  // Cycles 1-5: LUI x1, ADDI x2, ADDI x3, ADDI x4 (+1 for writeback)
         check_reg(1, 32'h00010000, "LUI  x1=base addr");
         check_reg(2, 32'd1234,     "ADDI x2=1234");
         check_reg(3, 32'd202,      "ADDI x3=202");
