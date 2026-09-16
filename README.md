@@ -92,7 +92,7 @@ vvp sim/tb_regfile.out
 #    objcopy -O binary a.out program.bin
 
 # 3. 32-bit words に整形して hex 化
-#    python tools/elf2hex.py program.bin > src/program.hex
+#    python tools/bin2hex.py program.bin > src/program.hex
 
 # 4. CPU の初期化ファイルとして利用
 #    例: fpga_top.v で program.hex を読み込む
@@ -168,13 +168,13 @@ powershell -ExecutionPolicy Bypass -File ".\tools\install_riscv_toolchain.ps1"
 riscv64-unknown-elf-gcc -O2 -nostdlib -nostartfiles -T tools/link.ld \
   tools/crt0.S examples/loop55.c -o examples/loop55.elf
 riscv64-unknown-elf-objcopy -O binary examples/loop55.elf examples/loop55.bin
-python tools/elf2hex.py examples/loop55.bin > examples/loop55.hex
+python tools/bin2hex.py examples/loop55.bin > examples/loop55.hex
 
 # button_led
 riscv64-unknown-elf-gcc -O2 -nostdlib -nostartfiles -T tools/link.ld \
   tools/crt0.S examples/button_led.c -o examples/button_led.elf
 riscv64-unknown-elf-objcopy -O binary examples/button_led.elf examples/button_led.bin
-python tools/elf2hex.py examples/button_led.bin > examples/button_led.hex
+python tools/bin2hex.py examples/button_led.bin > examples/button_led.hex
 ```
 
 生成した `*.hex` はそのまま CPU の初期化ファイルとして使えます。
