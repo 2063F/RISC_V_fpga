@@ -7,7 +7,7 @@ module tb_lbu_check;
     wire [4:0] rs1, rs2, rd;
     wire       reg_write;
     wire [2:0] imm_type;
-    wire [3:0] alu_op;
+    wire [4:0] alu_op;
     wire       alu_src_b, branch, jump, mem_read, mem_write;
     wire [1:0] wb_sel;
 

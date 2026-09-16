@@ -14,7 +14,7 @@ module tb_alu;
     // DUT signals
     // =========================================================================
     reg  [31:0] a, b;
-    reg  [3:0]  alu_op;
+    reg  [4:0]  alu_op;
     wire [31:0] result;
     wire        zero;
 
