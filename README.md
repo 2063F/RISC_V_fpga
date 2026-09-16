@@ -14,7 +14,11 @@ RV32I 命令セットを段階的に実装し、シングルサイクルCPU か�
 - RV32M の乗算・除算命令を実装済み
 - Scratch RAM と UART TX の MMIO を接続済み
 - 2段パイプライン化（フェッチ + 実行/書き戻し）を導入済み
-- `tb_cpu_top.v`, `tb_branch.v`, `tb_memory_full.v`, `tb_uart_cpu.v` で動作確認済み
+- UART RX ピンを `fpga_top` / 制約ファイルまで引き出し済み
+- `sim/` の全テストベンチ (19本) がパスする状態
+
+> **注意: 本CPUは RV32IM のみで、C拡張 (圧縮命令) は未実装です。**
+> C をビルドするときは必ず `-march=rv32im -mabi=ilp32` を指定してください。
 
 ## 開発ロードマップ
 
@@ -49,6 +53,7 @@ RISK_V_fpga/
 ├── sim/                      # テストベンチ
 │   ├── tb_alu.v
 │   ├── tb_register_file.v
+│   ├── tb_shift_logic.v      # シフト/論理/比較命令のCPU統合テスト
 │   └── tb_cpu_top.v
 ├── constraints/              # FPGA制約ファイル
 │   ├── tang_primer_25k.cst   # ピン制約
@@ -163,19 +168,38 @@ powershell -ExecutionPolicy Bypass -File ".\tools\install_riscv_toolchain.ps1"
 - `examples/loop55.c`: 1 から 10 までの加算結果 55 を LED で確認するサンプル
 - `examples/button_led.c`: `user_btn` で `led[1]` を切り替える MMIO サンプル
 
+> **`-march=rv32im -mabi=ilp32` は必須です。** 省略すると gcc の既定 multilib
+> (`rv32imac`) が選ばれ、本CPUが未実装の圧縮命令 (C拡張, 16ビット命令) を
+> 含むバイナリが生成されます。デコーダはそれを未定義オペコードとして読み飛ばす
+> だけなので、CPU はエラーも出さずに暴走します。
+>
+> `objcopy` の `-j .text -j .rodata` も必須です。`.data` は 0x0001_0000 (RAM)
+> に置かれるため、省くと ROM と RAM の隙間 64 KB がゼロ埋めされた巨大な bin が
+> 出力され、8192 語の命令ROMに収まりません。
+
 ```powershell
 # loop55
-riscv64-unknown-elf-gcc -O2 -nostdlib -nostartfiles -T tools/link.ld \
+riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -T tools/link.ld \
   tools/crt0.S examples/loop55.c -o examples/loop55.elf
-riscv64-unknown-elf-objcopy -O binary examples/loop55.elf examples/loop55.bin
+riscv64-unknown-elf-objcopy -O binary -j .text -j .rodata examples/loop55.elf examples/loop55.bin
 python tools/bin2hex.py examples/loop55.bin > examples/loop55.hex
 
 # button_led
-riscv64-unknown-elf-gcc -O2 -nostdlib -nostartfiles -T tools/link.ld \
+riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -T tools/link.ld \
   tools/crt0.S examples/button_led.c -o examples/button_led.elf
-riscv64-unknown-elf-objcopy -O binary examples/button_led.elf examples/button_led.bin
+riscv64-unknown-elf-objcopy -O binary -j .text -j .rodata examples/button_led.elf examples/button_led.bin
 python tools/bin2hex.py examples/button_led.bin > examples/button_led.hex
+
+# uart_echo_c (UART エコー。uart.h を拾うため examples/ を include パスに追加)
+riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link.ld \
+  tools/crt0.S examples/uart_echo_c.c -o examples/uart_echo_c.elf
+riscv64-unknown-elf-objcopy -O binary -j .text -j .rodata examples/uart_echo_c.elf examples/uart_echo_c.bin
+python tools/bin2hex.py examples/uart_echo_c.bin > examples/uart_echo_c.hex
 ```
+
+> 現時点の `crt0.S` は `.bss` のゼロクリアだけを行い、`.data` の ROM→RAM コピーは
+> 行いません。初期値つきグローバル変数は実行時に 0 になるので、書き込み可能な
+> グローバルは初期値なし (= `.bss`) に留めてください。
 
 生成した `*.hex` はそのまま CPU の初期化ファイルとして使えます。
 たとえば `fpga_top` の `INIT_FILE` を `examples/loop55.hex` または `examples/button_led.hex` に変更してください。
