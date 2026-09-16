@@ -14,11 +14,11 @@ IO_PORT "rst_btn" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 IO_LOC "user_btn" H10;
 IO_PORT "user_btn" IO_TYPE=LVCMOS33 PULL_MODE=DOWN;
 
-// --- UART (BL616デバッガ経由、USB-Cで接続) - Phase 6で有効化します ---
+// --- UART (BL616デバッガ経由、USB-Cで接続) ---
 IO_LOC "uart_tx" C3;
 IO_PORT "uart_tx" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
-// IO_LOC "uart_rx" B3;
-// IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "uart_rx" B3;
+IO_PORT "uart_rx" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
 // --- Onboard LEDs (READY=E8, DONE=D7 - dual-purpose option enabled in build) ---
 IO_LOC "led[0]" E8;

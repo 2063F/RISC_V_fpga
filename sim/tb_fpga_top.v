@@ -19,7 +19,8 @@ module tb_fpga_top;
         .clk      (clk),
         .rst_btn  (rst_btn),
         .user_btn (user_btn),
-        .led      (led)
+        .led      (led),
+        .uart_rx  (1'b1)   // UART RX line idle (high)
     );
 
     // Clock generation: 50 MHz (20ns period)

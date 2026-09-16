@@ -19,7 +19,8 @@ module fpga_top #(
     input  wire       rst_btn,   // Reset button (active high)
     input  wire       user_btn,  // User button (active high)
     output reg  [1:0] led,       // 2x onboard LEDs
-    output wire       uart_tx    // UART TX pin (connect to USB-UART RX)
+    output wire       uart_tx,   // UART TX pin (connect to USB-UART RX)
+    input  wire       uart_rx    // UART RX pin (connect to USB-UART TX)
 );
 
     // =========================================================================
@@ -51,6 +52,7 @@ module fpga_top #(
         .mem_read_en    (mem_read_en),
         .mem_read_data  (mem_read_data),
         .uart_tx_pin    (uart_tx),
+        .uart_rx_pin    (uart_rx),
         .debug_pc       (debug_pc),
         .debug_x1       (debug_x1)
     );
