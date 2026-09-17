@@ -116,24 +116,43 @@ C 言語プログラムを実行するために必要な追加ツールは RISC-
 
 ### 1. 追加で必要なもの
 
-- `riscv64-unknown-elf-gcc`
-- `riscv64-unknown-elf-objcopy`
-- `riscv64-unknown-elf-objdump`
+- `<prefix>-gcc`
+- `<prefix>-objcopy`
+- `<prefix>-objdump`
+
+`<prefix>` は配布元によって異なり、**どちらでも本プロジェクトはビルドできます**。
+
+| 配布元 | 接頭辞 |
+|:--|:--|
+| xPack (xpm で導入) | `riscv-none-elf-` |
+| SiFive / crosstool-NG 系 | `riscv64-unknown-elf-` |
+
+本 README のコマンド例は `riscv64-unknown-elf-` で書いていますが、
+xPack を使っている場合は `riscv-none-elf-` に読み替えてください。
 
 ### 2. 導入方法
 
-1. 公式または信頼できる配布元から Windows 用の prebuilt toolchain を入手
-2. 任意のフォルダ (例: `C:\riscv`) に展開
-3. `C:\riscv\bin` を PATH に追加
+xPack 版が最も手軽です (Node.js が必要)。
+
+```powershell
+npm install --global xpm
+xpm install --global @xpack-dev-tools/riscv-none-elf-gcc@latest
+```
+
+導入先 (`%APPDATA%\xPacks\@xpack-dev-tools\riscv-none-elf-gcc\<version>\.content\bin`)
+を PATH に追加します。prebuilt を手で展開する場合は、その `bin` を PATH に追加してください。
+
+> `winget` に RISC-V の bare-metal GCC パッケージは存在しません。`winget install`
+> で入れようとしても失敗します。
 
 ### 3. 動作確認
 
-PowerShell で次を実行します。
+PowerShell で次を実行します (接頭辞は導入したものに合わせてください)。
 
 ```powershell
-riscv64-unknown-elf-gcc --version
-riscv64-unknown-elf-objcopy --version
-riscv64-unknown-elf-objdump --version
+riscv-none-elf-gcc --version
+riscv-none-elf-objcopy --version
+riscv-none-elf-objdump --version
 ```
 
 3 つとも表示されれば導入成功です。
@@ -152,14 +171,16 @@ Set-Location -Path "C:\path\to\RISK_V_fpga"
 powershell -ExecutionPolicy Bypass -File ".\tools\install_riscv_toolchain.ps1"
 ```
 
-このスクリプトは `winget` を使って導入を試み、必要に応じて PATH の設定案内も出します。
+このスクリプトは 2 つの接頭辞 (`riscv-none-elf-` / `riscv64-unknown-elf-`) の両方を
+PATH と xPack の既定インストール先から探し、見つからなければ `xpm` での導入を案内します。
+PATH への追加コマンドもそのまま貼り付けられる形で表示します。
 
 > もし PowerShell で `Set-Location` の引数が連結してエラーになる場合は、**各コマンドを別行で実行**してください。  
 > さらに、`C:\path\to\RISK_V_fpga` の部分は **実際のリポジトリの保存場所** に置き換えてください。  
 > そのうえで `-File` のパスエラーが出る場合は、**絶対パス**で実行してください。  
 > 例: `powershell -ExecutionPolicy Bypass -File "C:\Users\yourname\Documents\RISK_V_fpga\tools\install_riscv_toolchain.ps1"`
 >
-> インストール後は **PowerShell を一度閉じて再度開く** か、`where.exe riscv64-unknown-elf-gcc` で確認してください。
+> インストール後は **PowerShell を一度閉じて再度開く** か、`where.exe riscv-none-elf-gcc` で確認してください。
 
 ### 5. ビルドして使う
 

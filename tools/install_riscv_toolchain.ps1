@@ -1,91 +1,153 @@
-# install_riscv_toolchain.ps1
+﻿# install_riscv_toolchain.ps1
 # Windows 用の RISC-V ツールチェーン導入支援スクリプト
 #
 # 使い方:
 #   powershell -ExecutionPolicy Bypass -File tools/install_riscv_toolchain.ps1
+#
+# 本プロジェクトは RV32IM (圧縮命令なし) の bare-metal ツールチェーンを使います。
+# ツール名の接頭辞は配布元によって異なり、どちらでもビルドできます:
+#   - riscv-none-elf-*        (xPack 版。xpm で入る)
+#   - riscv64-unknown-elf-*   (SiFive / crosstool-NG 系の一般的な名前)
 
 $ErrorActionPreference = 'Stop'
 
-$toolchainDir = Join-Path $env:USERPROFILE 'riscv-toolchain'
-$binDir = Join-Path $toolchainDir 'bin'
+# 探索する接頭辞。先に見つかったほうを採用する。
+$prefixes = @('riscv-none-elf', 'riscv64-unknown-elf')
+$tools    = @('gcc', 'objcopy', 'objdump')
 
-Write-Host "RISC-V toolchain will be installed under: $toolchainDir"
+# PATH に無くても xPack の既定インストール先は直接見に行く。
+$xpackRoot = Join-Path $env:APPDATA 'xPacks\@xpack-dev-tools\riscv-none-elf-gcc'
 
-# Check for winget
-if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
-    throw 'winget was not found. Install winget first and rerun this script.'
+function Find-ToolchainOnPath {
+    foreach ($p in $prefixes) {
+        $gcc = Get-Command "$p-gcc" -ErrorAction SilentlyContinue
+        if ($gcc) {
+            return [pscustomobject]@{
+                Prefix = $p
+                BinDir = Split-Path $gcc.Source -Parent
+                Source = 'PATH'
+            }
+        }
+    }
+    return $null
 }
 
-function Test-Toolchain {
-    param(
-        [string]$CommandName,
-        [string]$DisplayName
-    )
+function Find-ToolchainInXpack {
+    if (-not (Test-Path $xpackRoot -PathType Container)) { return $null }
 
-    $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue
-    if ($cmd) {
-        Write-Host "OK: $DisplayName -> $($cmd.Source)"
-        return $true
+    # 複数バージョンが入っている場合は新しいものを優先する。
+    $candidates = Get-ChildItem $xpackRoot -Directory |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName '.content\bin' } |
+        Where-Object { Test-Path (Join-Path $_ 'riscv-none-elf-gcc.exe') }
+
+    if ($candidates) {
+        return [pscustomobject]@{
+            Prefix = 'riscv-none-elf'
+            BinDir = $candidates[0]
+            Source = 'xPack'
+        }
+    }
+    return $null
+}
+
+function Show-Toolchain {
+    param([Parameter(Mandatory)] $Toolchain)
+
+    $ok = $true
+    foreach ($t in $tools) {
+        $exe = Join-Path $Toolchain.BinDir "$($Toolchain.Prefix)-$t.exe"
+        if (Test-Path $exe) {
+            Write-Host "  OK: $($Toolchain.Prefix)-$t"
+        }
+        else {
+            Write-Warning "  Missing: $($Toolchain.Prefix)-$t"
+            $ok = $false
+        }
+    }
+    return $ok
+}
+
+# -----------------------------------------------------------------------------
+# 1. すでに使えるツールチェーンがあるか調べる
+# -----------------------------------------------------------------------------
+$found = Find-ToolchainOnPath
+if (-not $found) { $found = Find-ToolchainInXpack }
+
+if ($found) {
+    Write-Host "RISC-V toolchain found ($($found.Source)): $($found.BinDir)"
+    Write-Host "Prefix: $($found.Prefix)-*"
+    Write-Host ''
+    $complete = Show-Toolchain -Toolchain $found
+
+    if ($found.Source -eq 'xPack') {
+        Write-Host ''
+        Write-Warning 'This toolchain is installed but not on PATH.'
+        Write-Host 'Add it for the current session with:'
+        Write-Host "  `$env:Path += ';$($found.BinDir)'"
+        Write-Host 'Or permanently with:'
+        Write-Host "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';$($found.BinDir)', 'User')"
     }
 
-    Write-Warning "Not found yet: $DisplayName"
-    return $false
+    if ($complete) {
+        Write-Host ''
+        Write-Host 'Toolchain verification succeeded.'
+        Write-Host ''
+        Write-Host 'Reminder: this CPU implements RV32IM only (no compressed instructions).'
+        Write-Host 'Always build with:  -march=rv32im -mabi=ilp32'
+        exit 0
+    }
+
+    Write-Warning 'The toolchain is incomplete. Reinstall it, or install the xPack build below.'
+}
+else {
+    Write-Host 'No RISC-V toolchain found on PATH or under the xPack install directory.'
 }
 
-# Ask the user whether to install the package.
-$confirm = Read-Host 'Install RISC-V toolchain using winget? (Y/N)'
+# -----------------------------------------------------------------------------
+# 2. 見つからなければ xpm (Node.js) 経由で入れる
+#    winget には RISC-V の bare-metal GCC パッケージが存在しないため使わない。
+# -----------------------------------------------------------------------------
+Write-Host ''
+Write-Host 'The xPack build can be installed with xpm, which needs Node.js (npm).'
+
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    Write-Warning 'Node.js was not found. Install it first:'
+    Write-Host '  winget install --id OpenJS.NodeJS.LTS -e'
+    Write-Host 'Then reopen PowerShell and rerun this script.'
+    exit 1
+}
+
+$confirm = Read-Host 'Install the RISC-V toolchain with xpm now? (Y/N)'
 if ($confirm -notin @('Y', 'y')) {
-    Write-Host 'Installation cancelled.'
+    Write-Host 'Installation cancelled. To do it manually:'
+    Write-Host '  npm install --global xpm'
+    Write-Host '  xpm install --global @xpack-dev-tools/riscv-none-elf-gcc@latest'
     exit 0
 }
 
-# Install a commonly used RISC-V toolchain package if available.
-# The exact package name may vary by environment, so this script prints guidance if it fails.
-try {
-    winget install --id "RISC-V.CPP" --source winget -e --accept-source-agreements --accept-package-agreements
-    Write-Host 'Install command completed.'
-}
-catch {
-    Write-Warning "Automatic install failed. Please install a RISC-V toolchain manually and add its bin directory to PATH."
-    Write-Warning 'Typical tools needed: riscv64-unknown-elf-gcc, riscv64-unknown-elf-objcopy, riscv64-unknown-elf-objdump'
+if (-not (Get-Command xpm -ErrorAction SilentlyContinue)) {
+    Write-Host 'Installing xpm...'
+    npm install --global xpm
 }
 
-# Update current session PATH if the common install directory now exists.
-if (Test-Path $binDir -PathType Container) {
-    if ($env:Path -notlike "*$binDir*") {
-        $env:Path = "$env:Path;$binDir"
-        Write-Host "Updated current session PATH with: $binDir"
-    }
+Write-Host 'Installing @xpack-dev-tools/riscv-none-elf-gcc...'
+xpm install --global '@xpack-dev-tools/riscv-none-elf-gcc@latest'
+
+$installed = Find-ToolchainInXpack
+if (-not $installed) {
+    Write-Warning 'Install finished but the toolchain was not found under:'
+    Write-Warning "  $xpackRoot"
+    Write-Host 'Locate riscv-none-elf-gcc.exe manually and add its directory to PATH.'
+    exit 1
 }
 
-# Verify tools in the current session.
-$allGood = $true
-foreach ($tool in @(
-    @{ Name = 'riscv64-unknown-elf-gcc'; Display = 'RISC-V GCC' },
-    @{ Name = 'riscv64-unknown-elf-objcopy'; Display = 'RISC-V objcopy' },
-    @{ Name = 'riscv64-unknown-elf-objdump'; Display = 'RISC-V objdump' }
-)) {
-    if (-not (Test-Toolchain -CommandName $tool.Name -DisplayName $tool.Display)) {
-        $allGood = $false
-    }
-}
-
-if ($allGood) {
-    Write-Host ''
-    Write-Host 'Toolchain verification succeeded.'
-}
-else {
-    Write-Host ''
-    Write-Host 'If the commands are still not found, open a new PowerShell window and run:'
-    Write-Host '  Get-Command riscv64-unknown-elf-gcc'
-    Write-Host '  where.exe riscv64-unknown-elf-gcc'
-}
-
-# Print instructions for manual PATH setup
 Write-Host ''
-Write-Host 'If needed, add the toolchain directory to PATH with:'
-Write-Host "  [Environment]::SetEnvironmentVariable('Path', \$env:Path + ';$binDir', 'User')"
+Write-Host "Installed to: $($installed.BinDir)"
+[void](Show-Toolchain -Toolchain $installed)
 Write-Host ''
-Write-Host 'Then verify with:'
-Write-Host '  riscv64-unknown-elf-gcc --version'
-Write-Host '  riscv64-unknown-elf-objcopy --version'
+Write-Host 'Add it to PATH permanently with:'
+Write-Host "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';$($installed.BinDir)', 'User')"
+Write-Host ''
+Write-Host 'Reminder: this CPU implements RV32IM only (no compressed instructions).'
+Write-Host 'Always build with:  -march=rv32im -mabi=ilp32'
