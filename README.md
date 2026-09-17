@@ -44,7 +44,7 @@ RV32I 命令セットを段階的に実装し、シングルサイクルCPU か�
 ```
 RISK_V_fpga/
 ├── src/                      # Verilog ソースファイル
-│   ├── riscv_defines.vh      # 共通定義
+│   ├── riscv_defines.vh      # 共通定義 (唯一の定義元。sim からは -I src で参照)
 │   ├── blinky.v              # LED点滅テスト (Phase 1)
 │   ├── alu.v                 # ALU (Phase 2)
 │   ├── register_file.v       # レジスタファイル (Phase 2)
