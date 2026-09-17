@@ -27,11 +27,21 @@ module instruction_memory #(
     assign dout_b = (addr_b < 32'h0000_8000) ? mem[word_addr_b] : 32'h0000_0000;
 
     integer i;
-    // Initialize memory with NOPs
     initial begin
+        // Fill the unused words with NOPs so that a testbench which only writes
+        // a handful of instructions still runs off into harmless code.
+        //
+        // GowinSynthesis unrolls for-loops and errors out past 2000 iterations
+        // ("Loop count limit of 2000 exceeded"), which turned this whole module
+        // into a black box and failed synthesis. The fill is only needed in
+        // simulation - BSRAM powers up zeroed on the device - so it is hidden
+        // from the synthesiser. $readmemh below stays visible: that is what
+        // initialises the ROM contents in the bitstream.
+        // synthesis translate_off
         for (i = 0; i < 8192; i = i + 1) begin
             mem[i] = 32'h0000_0013; // NOP
         end
+        // synthesis translate_on
         if (INIT_FILE != "") begin
             $readmemh(INIT_FILE, mem);
         end

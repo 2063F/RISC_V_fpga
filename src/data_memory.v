@@ -145,14 +145,21 @@ module data_memory (
     end
 
     // =========================================================================
-    // Memory Initialization (Optional, for simulation convenience)
+    // Memory Initialization (simulation only)
     // =========================================================================
+    // GowinSynthesis unrolls for-loops and errors out past 2000 iterations
+    // ("Loop count limit of 2000 exceeded"), which turned this whole module into
+    // a black box and failed synthesis. On the device BSRAM already powers up
+    // zeroed, so this loop is only needed to give simulation the same starting
+    // state, and is hidden from the synthesiser.
+    // synthesis translate_off
     integer i;
     initial begin
         for (i = 0; i < 16384; i = i + 1) begin
             mem[i] = 32'd0;
         end
     end
+    // synthesis translate_on
 
     // Note: Local loop variable i has been declared outside of the initial block
     // to strictly adhere to Verilog-2001 rules, preventing tool compilation errors.
