@@ -173,33 +173,33 @@ powershell -ExecutionPolicy Bypass -File ".\tools\install_riscv_toolchain.ps1"
 > 含むバイナリが生成されます。デコーダはそれを未定義オペコードとして読み飛ばす
 > だけなので、CPU はエラーも出さずに暴走します。
 >
-> `objcopy` の `-j .text -j .rodata` も必須です。`.data` は 0x0001_0000 (RAM)
-> に置かれるため、省くと ROM と RAM の隙間 64 KB がゼロ埋めされた巨大な bin が
-> 出力され、8192 語の命令ROMに収まりません。
+> `objcopy` に `-j` は付けないでください。`.data` の初期値は ROM 側 (LMA) に
+> 置かれており、`-j .text -j .rodata` で絞ると初期値つきグローバル変数が
+> hex から丸ごと落ちます。
 
 ```powershell
 # loop55
 riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -T tools/link.ld \
   tools/crt0.S examples/loop55.c -o examples/loop55.elf
-riscv64-unknown-elf-objcopy -O binary -j .text -j .rodata examples/loop55.elf examples/loop55.bin
+riscv64-unknown-elf-objcopy -O binary examples/loop55.elf examples/loop55.bin
 python tools/bin2hex.py examples/loop55.bin > examples/loop55.hex
 
 # button_led
 riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -T tools/link.ld \
   tools/crt0.S examples/button_led.c -o examples/button_led.elf
-riscv64-unknown-elf-objcopy -O binary -j .text -j .rodata examples/button_led.elf examples/button_led.bin
+riscv64-unknown-elf-objcopy -O binary examples/button_led.elf examples/button_led.bin
 python tools/bin2hex.py examples/button_led.bin > examples/button_led.hex
 
 # uart_echo_c (UART エコー。uart.h を拾うため examples/ を include パスに追加)
 riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link.ld \
   tools/crt0.S examples/uart_echo_c.c -o examples/uart_echo_c.elf
-riscv64-unknown-elf-objcopy -O binary -j .text -j .rodata examples/uart_echo_c.elf examples/uart_echo_c.bin
+riscv64-unknown-elf-objcopy -O binary examples/uart_echo_c.elf examples/uart_echo_c.bin
 python tools/bin2hex.py examples/uart_echo_c.bin > examples/uart_echo_c.hex
 ```
 
-> 現時点の `crt0.S` は `.bss` のゼロクリアだけを行い、`.data` の ROM→RAM コピーは
-> 行いません。初期値つきグローバル変数は実行時に 0 になるので、書き込み可能な
-> グローバルは初期値なし (= `.bss`) に留めてください。
+> `crt0.S` が `.data` の ROM→RAM コピーと `.bss` のゼロクリアを行うので、
+> 初期値つきグローバル変数も通常どおり使えます。`link.ld` には ROM 32 KB /
+> RAM 64 KB を超えたらリンクエラーになる `ASSERT` を入れてあります。
 
 生成した `*.hex` はそのまま CPU の初期化ファイルとして使えます。
 たとえば `fpga_top` の `INIT_FILE` を `examples/loop55.hex` または `examples/button_led.hex` に変更してください。
