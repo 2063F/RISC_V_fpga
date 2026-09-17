@@ -248,30 +248,32 @@ module tb_memory;
         $display("\n--- Store ---");
         wait_cycles(3);  // Cycles 5-7: SW, SH, SB
         // Verify data written to internal memory directly
-        if (uut.dmem.mem[0] === 32'd1234) begin
-            $display("  PASS  SW: dmem[0] = 0x%h (1234)", uut.dmem.mem[0]);
+        if (uut.dmem.peek_word(0) === 32'd1234) begin
+            $display("  PASS  SW: dmem[0] = 0x%h (1234)", uut.dmem.peek_word(0));
             pass_count = pass_count + 1;
         end else begin
-            $display("  FAIL  SW: dmem[0] = 0x%h (expected 0x%h)", uut.dmem.mem[0], 32'd1234);
+            $display("  FAIL  SW: dmem[0] = 0x%h (expected 0x%h)", uut.dmem.peek_word(0), 32'd1234);
             fail_count = fail_count + 1;
         end
-        if (uut.dmem.mem[1][15:0] === 16'd202) begin
-            $display("  PASS  SH: dmem[1][15:0] = %0d (202)", uut.dmem.mem[1][15:0]);
+        if ((uut.dmem.peek_word(1) & 32'h0000FFFF) === 32'd202) begin
+            $display("  PASS  SH: dmem[1][15:0] = %0d (202)", (uut.dmem.peek_word(1) & 32'h0000FFFF));
             pass_count = pass_count + 1;
         end else begin
-            $display("  FAIL  SH: dmem[1][15:0] = %0d (expected 202)", uut.dmem.mem[1][15:0]);
+            $display("  FAIL  SH: dmem[1][15:0] = %0d (expected 202)", (uut.dmem.peek_word(1) & 32'h0000FFFF));
             fail_count = fail_count + 1;
         end
-        if (uut.dmem.mem[2][7:0] === 8'd171) begin
-            $display("  PASS  SB: dmem[2][7:0] = %0d (171)", uut.dmem.mem[2][7:0]);
+        if ((uut.dmem.peek_word(2) & 32'h000000FF) === 32'd171) begin
+            $display("  PASS  SB: dmem[2][7:0] = %0d (171)", (uut.dmem.peek_word(2) & 32'h000000FF));
             pass_count = pass_count + 1;
         end else begin
-            $display("  FAIL  SB: dmem[2][7:0] = %0d (expected 171)", uut.dmem.mem[2][7:0]);
+            $display("  FAIL  SB: dmem[2][7:0] = %0d (expected 171)", (uut.dmem.peek_word(2) & 32'h000000FF));
             fail_count = fail_count + 1;
         end
 
         $display("\n--- Load ---");
-        wait_cycles(6);  // Cycles 8-13: LW, LH, LHU, LB, LBU + 1 extra settle
+        // 5 loads, and every load now costs 2 cycles: both memories have a
+        // registered read port so the CPU stalls one cycle waiting for data.
+        wait_cycles(6 + 5);
         check_reg(10, 32'd1234,       "LW  x10=1234");
         check_reg(11, 32'd202,        "LH  x11=202 (signed)");
         check_reg(12, 32'd202,        "LHU x12=202 (unsigned)");

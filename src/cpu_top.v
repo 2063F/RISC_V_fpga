@@ -52,11 +52,17 @@ module cpu_top #(
     // Internal Signals
     // =========================================================================
     reg  [31:0] pc;
-    wire [31:0] fetched_inst;
     reg  [31:0] ifid_pc;
-    reg  [31:0] ifid_inst;
     reg         ifid_valid;
+    reg         load_pending;   // 1 during the second (data) cycle of a load
     wire [31:0] next_pc;
+
+    // The instruction ROM's port-A output register IS the IF/ID instruction
+    // register: the address is applied in the fetch cycle and the instruction
+    // comes out in the execute cycle. A flushed slot is masked to a NOP here
+    // rather than by clearing the register, which lives inside the BSRAM.
+    wire [31:0] fetched_inst;
+    wire [31:0] ifid_inst = ifid_valid ? fetched_inst : NOP_INST;
     
     // Decoder outputs
     wire [4:0]  rs1;
@@ -93,6 +99,18 @@ module cpu_top #(
 
     wire execute_valid = ifid_valid;
     wire branch_or_jump = (pc_sel != 2'd0);
+
+    // =========================================================================
+    // Load stall
+    // =========================================================================
+    // Both memories have a registered read port (required to map them onto
+    // BSRAM - see data_memory.v), so load data is one cycle late. Freeze the
+    // fetch for one cycle and write back in the second cycle. Address, funct3
+    // and the register operands all stay put while frozen, so the memory's
+    // combinational sizing/extension logic still sees the load's own controls
+    // when the data word arrives.
+    wire stall     = mem_read && !load_pending;
+    wire wb_enable = reg_write && !stall;
 
     // =========================================================================
     // Debug assignment
@@ -144,7 +162,7 @@ module cpu_top #(
     wire [7:0] uart_rx_data;
     wire       uart_rx_ready;
     // rx_clear fires when CPU reads UART RX data register (LW to 0x8000_0018)
-    wire uart_rx_clear = mem_read && mmio_uart_rx_sel;
+    wire uart_rx_clear = mem_read && mmio_uart_rx_sel && !stall;
 
     uart_rx uart_rx_inst (
         .clk      (clk),
@@ -164,6 +182,8 @@ module cpu_top #(
     instruction_memory #(
         .INIT_FILE (INIT_FILE)
     ) imem (
+        .clk    (clk),
+        .ce     (!stall),
         .addr   (pc),
         .dout   (fetched_inst),
         .addr_b (alu_result),
@@ -204,7 +224,7 @@ module cpu_top #(
         .rd2        (rs2_data),
         .rd         (rd),
         .wd         (reg_write_data),
-        .we         (reg_write),
+        .we         (wb_enable),
         .dbg_x1     (debug_x1)
     );
     
@@ -346,20 +366,22 @@ module cpu_top #(
     // =========================================================================
     always @(posedge clk) begin
         if (!rst_n) begin
-            pc         <= 32'd0;
-            ifid_pc    <= 32'd0;
-            ifid_inst  <= NOP_INST;
-            ifid_valid <= 1'b0;
+            pc           <= 32'd0;
+            ifid_pc      <= 32'd0;
+            ifid_valid   <= 1'b0;
+            load_pending <= 1'b0;
+        end else if (stall) begin
+            // Hold everything; next cycle the load data is on the memory output.
+            load_pending <= 1'b1;
         end else begin
-            pc <= next_pc;
+            load_pending <= 1'b0;
+            pc           <= next_pc;
 
             if (branch_or_jump) begin
                 ifid_pc    <= 32'd0;
-                ifid_inst  <= NOP_INST;
                 ifid_valid <= 1'b0;
             end else begin
                 ifid_pc    <= pc;
-                ifid_inst  <= fetched_inst;
                 ifid_valid <= 1'b1;
             end
         end

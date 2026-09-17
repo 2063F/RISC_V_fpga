@@ -8,3 +8,6 @@ sim/*.out
 
 # Waveform dumps
 *.vcd
+
+# ROM image staged next to the Gowin project by build.tcl
+gowin_project/*/examples/

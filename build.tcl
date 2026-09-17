@@ -13,23 +13,29 @@ set proj_file [file join $proj_path $proj_name $proj_name.gprj]
 # Open the existing project
 open_project $proj_file
 
-# open_project changes the working directory to the .gprj folder. The RTL loads
-# its ROM image with $readmemh("examples/loop55.hex"), a path relative to the
-# repository root (the same path the simulations use), so restore the root here.
+# open_project changes the working directory to the folder holding the .gprj,
+# and that is also where Gowin writes its impl/ output tree. The RTL loads its
+# ROM with $readmemh("examples/loop55.hex"), a path relative to the repository
+# root (the same one the simulations use), so stage a copy of the hex next to
+# the project rather than cd'ing back to the root - a cd would work for the
+# $readmemh but would also drag the whole impl/ tree out to the repo root.
 #
-# Without this the $readmemh silently fails with only a warning
+# Without a resolvable hex the $readmemh only warns
 # ("WARN (EX3988) : Cannot open file"), the ROM reads back as all zeros, and the
 # synthesiser then constant-folds the entire CPU away - ALU, decoder, register
-# file, both memories and the UART are all reported as "swept in optimizing".
-# The build still succeeds and produces a bitstream containing just the LED
-# blinker, so the board looks alive while running no CPU at all.
-cd $root_dir
-
-# Fail loudly if the ROM image is missing, rather than synthesising an empty CPU.
+# file, both memories and the UART all reported as "swept in optimizing". The
+# build still succeeds and produces a bitstream containing just the LED blinker,
+# so the board looks alive while running no CPU at all.
 set init_hex "examples/loop55.hex"
-if {![file exists $init_hex]} {
-    error "ROM image not found: [file join [pwd] $init_hex] - build it first (see README)"
+set src_hex  [file join $root_dir $init_hex]
+
+if {![file exists $src_hex]} {
+    error "ROM image not found: $src_hex - build it first (see README)"
 }
+
+file mkdir [file join [pwd] examples]
+file copy -force $src_hex [file join [pwd] $init_hex]
+puts "Staged ROM image: [file join [pwd] $init_hex]"
 
 # Set Top Module and options
 set_option -top_module fpga_top

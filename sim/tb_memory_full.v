@@ -65,12 +65,12 @@ module tb_memory_full;
         input [31:0]  expected;
         input [255:0] name;
         begin
-            if (uut.dmem.mem[word_idx] === expected) begin
+            if (uut.dmem.peek_word(word_idx) === expected) begin
                 $display("  PASS  %s: dmem[%0d] = 0x%08h", name, word_idx, expected);
                 pass_count = pass_count + 1;
             end else begin
                 $display("  FAIL  %s: dmem[%0d] = 0x%08h (expected 0x%08h)",
-                         name, word_idx, uut.dmem.mem[word_idx], expected);
+                         name, word_idx, uut.dmem.peek_word(word_idx), expected);
                 fail_count = fail_count + 1;
             end
         end
@@ -252,7 +252,9 @@ module tb_memory_full;
         // Phase 3: Load operations (12 cycles)
         // =====================================================================
         $display("\n--- [3] Load Operations ---");
-        wait_cycles(13);
+        // 11 loads, and every load now costs 2 cycles: both memories have a
+        // registered read port so the CPU stalls one cycle waiting for data.
+        wait_cycles(13 + 11);
         check_reg(10, 32'hFFFFFFFF,  "LW   x10=0xFFFFFFFF   ");
         check_reg(11, 32'hFFFF8000,  "LH   x11=0xFFFF8000 SE");
         check_reg(12, 32'h00008000,  "LHU  x12=0x00008000 ZE");
