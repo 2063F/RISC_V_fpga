@@ -294,6 +294,12 @@ powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1
 
 # 受信しつつ4秒後に 'Z' を送ってエコーを確認する
 powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Seconds 10 -Send 'Z' -SendAfter 4
+
+# 対話モード: 打った文字がそのままボードへ行く (Esc または Ctrl+] で終了)
+powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Interactive
+
+# 受信バイトを16進でも表示する (文字化けの切り分け用)
+powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Interactive -ShowHex
 ```
 
 > 起動メッセージは書き込み直後に流れてしまいます。取り逃したらリセット (S1) を
