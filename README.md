@@ -18,6 +18,8 @@ RV32I 命令セットを段階的に実装し、シングルサイクルCPU か�
 - 命令ROM・データRAM を BSRAM に配置 (ロード時1サイクルストール)
 - `sim/` の全テストベンチ (21本) がパスする状態
 - Tang Primer 25K で合成・配置配線が通り、50 MHz 制約を満たす
+- **実機 (Tang Primer 25K) で動作確認済み** — `loop55` を SRAM に書き込み、
+  LED[0] のハートビートと LED[1] 点灯 (x1 = 55 到達) を確認
 
 ### 実測値 (printf_demo.hex で合成)
 
@@ -287,6 +289,12 @@ powershell -ExecutionPolicy Bypass -File tools/program.ps1 -Flash
 
 > `tools/program.ps1` はビットストリームより新しい `src/*.v` があると警告します。
 > 合成し直さずに古いビットストリームを焼く事故を防ぐためです。
+>
+> SRAM への書き込みは verify 無し (`--run 2`) を使っています。GW5A-25A で
+> `--run 4` (SRAM Program and Verify) を試すと、書き込み自体は通るのに読み戻しで
+> `Error: Verify failed of at 0` になります。この系列は SRAM のリードバックが
+> 既定で無効なためで、verify の失敗は書き込み失敗を意味しません (実機で `--run 2`
+> なら正常に動作することを確認済み)。
 >
 > `programmer_cli.exe` は Python を同梱しており `PYTHONIOENCODING` を継承します。
 > `utf-8:surrogateescape` などが設定された環境では同梱 Python が起動時に落ちる
