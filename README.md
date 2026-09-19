@@ -251,14 +251,48 @@ python tools/bin2hex.py examples/uart_echo_c.bin > examples/uart_echo_c.hex
 
 ### 6. FPGA 実機の起動手順
 
-1. まずサンプルを hex に変換します。
+1. 動かしたいサンプルを hex に変換します (上記「5. ビルドして使う」)。
   - 起動確認だけなら `examples/loop55.hex`
   - ボタン/LED の MMIO 確認なら `examples/button_led.hex`
+  - UART まで一通り動かすなら `examples/printf_demo.hex`
 2. `src/fpga_top.v` の `INIT_FILE` を使いたい hex に合わせます。
   - 既定値は `examples/loop55.hex` です。
-3. Gowin EDA で `build.tcl` を実行して合成・配置配線します。
-4. Tang Primer 25K に書き込みます。
-5. リセット後、`loop55` なら `led[1]` が 55 完了で ON、`button_led` なら `user_btn` を押すたびに `led[1]` が切り替わります。
+  - `build.tcl` はここから hex のパスを読むので、変更箇所はこの1か所だけです。
+3. 合成・配置配線します。
+
+```powershell
+& "C:\Gowin\<version>\IDE\bin\gw_sh.exe" build.tcl
+```
+
+4. Tang Primer 25K Dock の **USB-C** を PC に接続します (給電専用ポートではなく
+   BL616 デバッガ側)。接続されると JTAG とシリアルポートが現れます。
+5. 書き込みます。
+
+```powershell
+# 検出だけ確認する
+powershell -ExecutionPolicy Bypass -File tools/program.ps1 -ScanOnly
+
+# SRAM に書き込む (数秒。電源を切ると消える。まずはこちら)
+powershell -ExecutionPolicy Bypass -File tools/program.ps1
+
+# 外部SPIフラッシュに書き込む (電源を切っても残る)
+powershell -ExecutionPolicy Bypass -File tools/program.ps1 -Flash
+```
+
+6. リセット (S1) 後の期待動作:
+  - `loop55` : `led[0]` が約1.5Hzで点滅 (クロック生存)、`led[1]` が点灯
+    (CPU が x1 = 55 を計算完了)
+  - `button_led` : `user_btn` (S2) を押すたびに `led[1]` が反転
+  - `printf_demo` / `uart_echo_c` : 115200bps のシリアル端末に出力
+
+> `tools/program.ps1` はビットストリームより新しい `src/*.v` があると警告します。
+> 合成し直さずに古いビットストリームを焼く事故を防ぐためです。
+>
+> `programmer_cli.exe` は Python を同梱しており `PYTHONIOENCODING` を継承します。
+> `utf-8:surrogateescape` などが設定された環境では同梱 Python が起動時に落ちる
+> (`Fatal Python error: Py_Initialize`) ため、スクリプトは子プロセスの間だけ
+> Python 系の環境変数を外して呼び出します。手で `programmer_cli` を叩いて同じ
+> エラーが出たときは、これらの変数を外してください。
 
 ### 7. 追加で便利な確認コマンド
 
