@@ -141,8 +141,11 @@ module tb_cpu_top;
         $display("[PC=%0d] Executed MUL x6, x1, x2", debug_pc - 4);
         check_reg(6, 32'd200, "x6 = x1 * x2");
 
-        // Cycle 7: DIV x7, x2, x1 (PC=24)
+        // DIV x7, x2, x1 (PC=24)
+        // DIV now runs on the multi-cycle divider: 34 cycles of stall, so this
+        // instruction takes 35 clocks instead of 1 (20ns per clock).
         #20;
+        #(34 * 20);
         $display("[PC=%0d] Executed DIV x7, x2, x1", debug_pc - 4);
         check_reg(7, 32'd2, "x7 = x2 / x1");
 

@@ -91,7 +91,9 @@ module tb_rv32m_full;
         rst_n = 1;
 
         // 9 straight-line instructions, no branches; ample margin.
-        wait_cycles(20);
+        // DIVU / REM / REMU each run on the multi-cycle divider and stall for
+        // 34 cycles, so allow for the three of them on top of the base count.
+        wait_cycles(20 + 3 * 34);
 
         check_reg(10, 32'hFFFFFFFF, "MULH   x10 = high32(-8 * 3)");
         check_reg(11, 32'h00000002, "MULHU  x11 = high32(0xFFFFFFF8u * 3u)");

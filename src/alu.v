@@ -1,7 +1,8 @@
 // =============================================================================
 // alu.v - 32-bit ALU for RISC-V RV32I CPU
 // =============================================================================
-// Operations: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU
+// Operations: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU, and the
+//             RV32M multiplies. Division lives in divider.v (multi-cycle).
 //
 // Key differences from x86 ALU:
 //   - No flag registers (CF, ZF, SF, OF, PF, AF) — not needed!
@@ -26,28 +27,10 @@ module alu (
     wire signed [63:0] mul_signed_unsigned = $signed(a) * $signed({1'b0, b});
     wire        [63:0] mul_unsigned        = {32'd0, a} * {32'd0, b};
 
-    // Intermediate variables for custom restoring division
-    reg [31:0] div_abs_a;
-    reg [31:0] div_abs_b;
-    reg        div_sign_a;
-    reg        div_sign_b;
-    reg [31:0] div_quot;
-    reg [31:0] div_rem;
-    integer    div_idx;
-
     // zero flag: used by BEQ/BNE branch logic in control unit
     assign zero = (result == 32'd0);
 
     always @(*) begin
-        // Prevent latches by initializing local division regs
-        div_abs_a   = 32'd0;
-        div_abs_b   = 32'd0;
-        div_sign_a  = 1'b0;
-        div_sign_b  = 1'b0;
-        div_quot    = 32'd0;
-        div_rem     = 32'd0;
-        div_idx     = 0;
-
         case (alu_op)
             // ------------------------------------------------------------------
             // ADD: a + b
@@ -117,49 +100,14 @@ module alu (
 
             // ------------------------------------------------------------------
             // M Extension: Division and Remainder (DIV, DIVU, REM, REMU)
-            // Custom comb restoring division to ensure safe synthesis on Gowin.
             // ------------------------------------------------------------------
-            `ALU_DIV, `ALU_DIVU, `ALU_REM, `ALU_REMU: begin
-                // Check division by zero
-                if (b == 32'd0) begin
-                    if (alu_op == `ALU_DIV || alu_op == `ALU_DIVU)
-                        result = 32'hFFFF_FFFF;
-                    else
-                        result = a; // REM/REMU returns A
-                end
-                // Check overflow (MIN_INT / -1)
-                else if ((alu_op == `ALU_DIV || alu_op == `ALU_REM) && a == 32'h8000_0000 && b == 32'hFFFF_FFFF) begin
-                    if (alu_op == `ALU_DIV)
-                        result = 32'h8000_0000;
-                    else
-                        result = 32'd0; // REM returns 0
-                end
-                else begin
-                    // Core Restoring Division Logic using module-scoped regs
-                    div_sign_a = a[31] && (alu_op == `ALU_DIV || alu_op == `ALU_REM);
-                    div_sign_b = b[31] && (alu_op == `ALU_DIV || alu_op == `ALU_REM);
-                    
-                    div_abs_a = div_sign_a ? -a : a;
-                    div_abs_b = div_sign_b ? -b : b;
-                    
-                    div_quot = 32'd0;
-                    div_rem  = 32'd0;
-                    
-                    for (div_idx = 31; div_idx >= 0; div_idx = div_idx - 1) begin
-                        div_rem = (div_rem << 1) | (div_abs_a[div_idx]);
-                        if (div_rem >= div_abs_b) begin
-                            div_rem = div_rem - div_abs_b;
-                            div_quot[div_idx] = 1'b1;
-                        end
-                    end
-                    
-                    if (alu_op == `ALU_DIV || alu_op == `ALU_DIVU) begin
-                        result = (div_sign_a ^ div_sign_b) ? -div_quot : div_quot;
-                    end else begin
-                        result = div_sign_a ? -div_rem : div_rem;
-                    end
-                end
-            end
+            // Not handled here. The 32-iteration restoring loop used to be
+            // unrolled into combinational logic in this module, and it became
+            // the critical path of the whole design: place & route reported a
+            // maximum frequency of 5.031 MHz against the 50 MHz constraint.
+            // divider.v now does it over 34 cycles and cpu_top stalls; the
+            // result is muxed in at write-back, so these opcodes fall through
+            // to the default below.
 
             default:     result = 32'd0;
         endcase

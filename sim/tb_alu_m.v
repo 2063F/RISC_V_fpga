@@ -40,7 +40,7 @@ module tb_alu_m;
     endtask
 
     initial begin
-        $display("=== RV32M ALU Simulation Start ===");
+        $display("=== RV32M ALU (multiply) Simulation Start ===");
 
         // 1. MUL (a * b)
         alu_op = `ALU_MUL;
@@ -62,36 +62,15 @@ module tb_alu_m;
         alu_op = `ALU_MULHSU;
         a = -32'd1; b = 32'hFFFF_FFFF; #10; check(32'hFFFF_FFFF, "MULHSU (-1 * MAX_UINT)");
 
-        // 5. DIV (signed division)
-        alu_op = `ALU_DIV;
-        a = 32'd20; b = 32'd5; #10; check(32'd4, "DIV (20 / 5)");
-        a = -32'd20; b = 32'd5; #10; check(-32'd4, "DIV (-20 / 5)");
-        a = 32'd20; b = -32'd5; #10; check(-32'd4, "DIV (20 / -5)");
-        a = -32'd20; b = -32'd5; #10; check(32'd4, "DIV (-20 / -5)");
-        // Edge cases
-        a = 32'd10; b = 32'd0; #10; check(32'hFFFF_FFFF, "DIV by zero");
-        a = 32'h8000_0000; b = 32'hFFFF_FFFF; #10; check(32'h8000_0000, "DIV overflow (MIN_INT / -1)");
-
-        // 6. DIVU (unsigned division)
-        alu_op = `ALU_DIVU;
-        a = 32'd20; b = 32'd5; #10; check(32'd4, "DIVU (20 / 5)");
-        a = 32'hFFFF_FFFE; b = 32'd2; #10; check(32'h7FFF_FFFF, "DIVU large unsigned");
-        a = 32'd10; b = 32'd0; #10; check(32'hFFFF_FFFF, "DIVU by zero");
-
-        // 7. REM (signed remainder)
-        alu_op = `ALU_REM;
-        a = 32'd22; b = 32'd5; #10; check(32'd2, "REM (22 % 5)");
-        a = -32'd22; b = 32'd5; #10; check(-32'd2, "REM (-22 % 5)");
-        a = 32'd10; b = 32'd0; #10; check(32'd10, "REM by zero");
-        a = 32'h8000_0000; b = 32'hFFFF_FFFF; #10; check(32'd0, "REM overflow (MIN_INT % -1)");
-
-        // 8. REMU (unsigned remainder)
-        alu_op = `ALU_REMU;
-        a = 32'd22; b = 32'd5; #10; check(32'd2, "REMU (22 % 5)");
-        a = 32'd10; b = 32'd0; #10; check(32'd10, "REMU by zero");
+        // Division (DIV / DIVU / REM / REMU) is no longer part of the ALU.
+        // The 32-iteration restoring loop used to be unrolled into
+        // combinational logic here and became the critical path of the whole
+        // design (5.031 MHz against a 50 MHz constraint). It now lives in the
+        // multi-cycle divider.v, and is covered by sim/tb_divider.v at the unit
+        // level and sim/tb_rv32m_full.v + sim/tb_cpu_top.v through the CPU.
 
         if (failures == 0) begin
-            $display("ALL M EXTENSION ALU TESTS PASSED!");
+            $display("ALL M EXTENSION MULTIPLY TESTS PASSED!");
         end else begin
             $display("SOME TESTS FAILED! Failures: %d", failures);
         end

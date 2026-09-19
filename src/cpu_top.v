@@ -55,6 +55,7 @@ module cpu_top #(
     reg  [31:0] ifid_pc;
     reg         ifid_valid;
     reg         load_pending;   // 1 during the second (data) cycle of a load
+    reg         div_started;    // 1 once the divider has been handed this instruction
     wire [31:0] next_pc;
 
     // The instruction ROM's port-A output register IS the IF/ID instruction
@@ -109,7 +110,25 @@ module cpu_top #(
     // and the register operands all stay put while frozen, so the memory's
     // combinational sizing/extension logic still sees the load's own controls
     // when the data word arrives.
-    wire stall     = mem_read && !load_pending;
+    wire load_stall = mem_read && !load_pending;
+
+    // =========================================================================
+    // Divide stall
+    // =========================================================================
+    // DIV/DIVU/REM/REMU run on the multi-cycle divider (34 cycles for a real
+    // division, 2 for divide-by-zero and the MIN_INT/-1 overflow). The whole
+    // restoring loop used to be combinational inside the ALU and was the
+    // critical path of the design - 5.031 MHz against a 50 MHz constraint.
+    //
+    // div_started mirrors load_pending: it makes div_start a single-cycle pulse
+    // even though the instruction sits in the execute stage for the whole
+    // division, and it is cleared as soon as the instruction retires.
+    wire is_div    = (alu_op == `ALU_DIV)  || (alu_op == `ALU_DIVU) ||
+                     (alu_op == `ALU_REM)  || (alu_op == `ALU_REMU);
+    wire div_start = is_div && !div_started;
+    wire div_stall = is_div && !div_done;
+
+    wire stall     = load_stall || div_stall;
     wire wb_enable = reg_write && !stall;
 
     // =========================================================================
@@ -249,6 +268,27 @@ module cpu_top #(
         .zero   (alu_zero)
     );
 
+    // 6b. Multi-cycle Divider (RV32M DIV/DIVU/REM/REMU)
+    wire [31:0] div_result;
+    wire        div_done;
+
+    divider div_unit (
+        .clk       (clk),
+        .rst_n     (rst_n),
+        .start     (div_start),
+        .a         (rs1_data),
+        .b         (rs2_data),
+        .is_signed ((alu_op == `ALU_DIV) || (alu_op == `ALU_REM)),
+        .want_rem  ((alu_op == `ALU_REM) || (alu_op == `ALU_REMU)),
+        .result    (div_result),
+        .done      (div_done)
+    );
+
+    // Write-back value for ALU-class instructions. alu_result itself still
+    // drives address decoding and the branch comparison, which divides never
+    // use, so only the register write-back needs the divider's answer.
+    wire [31:0] exec_result = is_div ? div_result : alu_result;
+
     // 7. Internal Data Memory (RAM)
     wire [31:0] internal_mem_read_data;
 
@@ -336,10 +376,10 @@ module cpu_top #(
 
     always @(*) begin
         case (wb_sel)
-            2'd0:    reg_write_data = alu_result;
+            2'd0:    reg_write_data = exec_result;
             2'd1:    reg_write_data = selected_mem_data;
             2'd2:    reg_write_data = ifid_pc + 32'd4;
-            default: reg_write_data = alu_result;
+            default: reg_write_data = exec_result;
         endcase
     end
 
@@ -370,11 +410,14 @@ module cpu_top #(
             ifid_pc      <= 32'd0;
             ifid_valid   <= 1'b0;
             load_pending <= 1'b0;
+            div_started  <= 1'b0;
         end else if (stall) begin
-            // Hold everything; next cycle the load data is on the memory output.
+            // Hold everything until the memory or the divider comes back.
             load_pending <= 1'b1;
+            div_started  <= 1'b1;
         end else begin
             load_pending <= 1'b0;
+            div_started  <= 1'b0;
             pc           <= next_pc;
 
             if (branch_or_jump) begin
