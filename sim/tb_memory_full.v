@@ -231,7 +231,7 @@ module tb_memory_full;
         // =====================================================================
         $display("=== Phase E: Full Memory Instruction Coverage ===\n");
         $display("--- [1] Register Initialization ---");
-        wait_cycles(6);
+        wait_cycles(6 + 1);   // +1 for the third pipeline stage
         check_reg(1, 32'h00010000,  "LUI  x1=base addr     ");
         check_reg(5, 32'h00008000,  "LUI  x5=0x8000        ");
         check_reg(6, 32'h000000FF,  "ADDI x6=0xFF          ");

@@ -111,8 +111,12 @@ module tb_cpu_top;
         // Each cycle is 20ns. 
         // Wait for instructions to execute.
         
-        // Cycle 1: ADDI x1, x0, 10 (PC=0)
+        // ADDI x1, x0, 10 (PC=0)
+        // The pipeline is three stages now (fetch / decode+register read /
+        // execute+write-back), so the first result lands one cycle later than
+        // it did with two stages.
         #40;
+        #20;
         $display("[PC=%0d] Executed ADDI x1, x0, 10", debug_pc - 4);
         check_reg(1, 32'd10, "x1 initialization");
 

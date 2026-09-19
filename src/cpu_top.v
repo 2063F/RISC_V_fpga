@@ -1,25 +1,33 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company: 
-// Engineer: 
-// 
-// Create Date: 2026/05/23
-// Design Name: 
 // Module Name: cpu_top
-// Project Name: RISC-V RV32I CPU
+// Project Name: RISC-V RV32IM CPU
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
-// Tool Versions: 
-// Description: Top level CPU module connecting datapath and control unit.
-//              Handles a two-stage pipeline (fetch + execute/writeback).
-// 
-// Dependencies: riscv_defines.vh, instruction_memory.v,
-//               instruction_decoder.v, imm_gen.v, register_file.v,
-//               control_unit.v, alu.v
-// 
-// Revision:
-// Revision 0.01 - File Created
-// Additional Comments:
-// 
+// Description: Top level CPU: a three-stage pipeline.
+//
+//   IF  fetch   : PC drives the instruction ROM
+//   ID  decode  : decode, immediate generation, register file read
+//   EX  execute : ALU / multiplier / divider, memory, write-back
+//
+// Why three stages
+// ----------------
+// It used to be two, with decode, register read, ALU, memory and write-back all
+// in one cycle. That chain - instruction ROM -> register file 32:1 read mux ->
+// ALU - was the critical path once the multiply and divide had been moved into
+// their own units, and it left only +0.001 ns of slack against the 50 MHz
+// constraint. Splitting the register read away from the ALU gives real margin.
+//
+// The cost is a data hazard: the instruction in ID reads the register file in
+// the same cycle the instruction in EX writes it. A single forwarding path from
+// the EX write-back value into the ID read covers every case, because only one
+// instruction is ever in flight between them.
+//
+// Branches and jumps resolve in EX, so a taken one discards the two
+// instructions behind it.
+//
+// Dependencies: riscv_defines.vh, instruction_memory.v, instruction_decoder.v,
+//               imm_gen.v, register_file.v, control_unit.v, alu.v,
+//               multiplier.v, divider.v, data_memory.v, uart_tx.v, uart_rx.v
 //////////////////////////////////////////////////////////////////////////////////
 
 `include "riscv_defines.vh"
@@ -29,18 +37,18 @@ module cpu_top #(
 ) (
     input  wire        clk,
     input  wire        rst_n,
-    
+
     // External Memory / IO interface
     output wire [31:0] mem_addr,
     output wire [31:0] mem_write_data,
     output wire        mem_write_en,
     output wire        mem_read_en,
     input  wire [31:0] mem_read_data,
-    
+
     // UART
     output wire        uart_tx_pin,
     input  wire        uart_rx_pin,
-    
+
     // Debug ports
     output wire [31:0] debug_pc,
     output wire [31:0] debug_x1
@@ -49,73 +57,89 @@ module cpu_top #(
     localparam [31:0] NOP_INST = 32'h0000_0013;
 
     // =========================================================================
-    // Internal Signals
+    // Stage 1: Instruction Fetch
     // =========================================================================
     reg  [31:0] pc;
-    reg  [31:0] ifid_pc;
-    reg         ifid_valid;
-    reg         load_pending;   // 1 during the second (data) cycle of a load
-    reg         mcycle_started; // 1 once the multiplier/divider has been handed this instruction
     wire [31:0] next_pc;
 
-    // The instruction ROM's port-A output register IS the IF/ID instruction
-    // register: the address is applied in the fetch cycle and the instruction
-    // comes out in the execute cycle. A flushed slot is masked to a NOP here
-    // rather than by clearing the register, which lives inside the BSRAM.
     wire [31:0] fetched_inst;
     wire        fetched_valid;
+    wire [31:0] rom_data_read;
+
+    // IF/ID. The ROM's port-A output register holds the instruction itself, so
+    // only the PC and the valid bit need registers here.
+    reg  [31:0] ifid_pc;
+    reg         ifid_valid;
 
     // One mux on the fetch path, not two: both selects are register outputs, so
     // combining them costs no extra logic on the data path itself.
-    wire        inst_valid = ifid_valid && fetched_valid;
-    wire [31:0] ifid_inst  = inst_valid ? fetched_inst : NOP_INST;
-    
-    // Decoder outputs
-    wire [4:0]  rs1;
-    wire [4:0]  rs2;
-    wire [4:0]  rd;
-    wire        reg_write;
-    wire [2:0]  imm_type;
-    wire [4:0]  alu_op;
-    wire        alu_src_b;
-    wire        branch;
-    wire        jump;
-    wire        mem_read;
-    wire        mem_write;
-    wire [1:0]  wb_sel;
-    
-    // Imm Gen output
-    wire [31:0] imm;
-    
-    // Register File outputs / inputs
-    wire [31:0] rs1_data;
-    wire [31:0] rs2_data;
-    reg  [31:0] reg_write_data;
-    
-    // Control Unit outputs
+    wire        id_inst_valid = ifid_valid && fetched_valid;
+    wire [31:0] id_inst       = id_inst_valid ? fetched_inst : NOP_INST;
+
+    // =========================================================================
+    // Stage 2: Decode and Register Read
+    // =========================================================================
+    wire [4:0]  id_rs1, id_rs2, id_rd;
+    wire        id_reg_write;
+    wire [2:0]  id_imm_type;
+    wire [4:0]  id_alu_op;
+    wire        id_alu_src_b;
+    wire        id_branch, id_jump;
+    wire        id_mem_read, id_mem_write;
+    wire [1:0]  id_wb_sel;
+    wire [31:0] id_imm;
+
+    wire [31:0] rf_rd1, rf_rd2;
+
+    // =========================================================================
+    // ID/EX pipeline register
+    // =========================================================================
+    reg  [31:0] ex_pc;
+    reg  [31:0] ex_rs1_data, ex_rs2_data;
+    reg  [31:0] ex_imm;
+    reg  [4:0]  ex_rd;
+    reg  [4:0]  ex_alu_op;
+    reg         ex_reg_write;
+    reg         ex_alu_src_b;
+    reg         ex_branch, ex_jump;
+    reg         ex_mem_read, ex_mem_write;
+    reg  [1:0]  ex_wb_sel;
+    reg  [2:0]  ex_funct3;
+    reg  [6:0]  ex_opcode;
+    reg         ex_valid;
+
+    // Stall bookkeeping
+    reg         load_pending;    // 1 during the second (data) cycle of a load
+    reg         mcycle_started;  // 1 once the multiplier/divider has this instruction
+
+    // =========================================================================
+    // Stage 3: Execute / Memory / Write-back
+    // =========================================================================
     wire        alu_src_a;
     wire [1:0]  pc_sel;
-    
-    // ALU inputs / outputs
-    reg  [31:0] alu_in_a;
-    reg  [31:0] alu_in_b;
+    reg  [31:0] alu_in_a, alu_in_b;
     wire [31:0] alu_result;
     wire        alu_zero;
+    reg  [31:0] reg_write_data;
     reg  [31:0] next_pc_temp;
 
-    wire execute_valid = ifid_valid;
-    wire branch_or_jump = (pc_sel != 2'd0);
+    wire [31:0] mul_result;
+    wire        mul_done;
+    wire [31:0] div_result;
+    wire        div_done;
+
+    wire branch_or_jump = ex_valid && (pc_sel != 2'd0);
 
     // =========================================================================
     // Load stall
     // =========================================================================
     // Both memories have a registered read port (required to map them onto
     // BSRAM - see data_memory.v), so load data is one cycle late. Freeze the
-    // fetch for one cycle and write back in the second cycle. Address, funct3
-    // and the register operands all stay put while frozen, so the memory's
-    // combinational sizing/extension logic still sees the load's own controls
-    // when the data word arrives.
-    wire load_stall = mem_read && !load_pending;
+    // pipeline for one cycle and write back in the second cycle. Address,
+    // funct3 and the register operands all stay put while frozen, so the
+    // memory's combinational sizing/extension logic still sees the load's own
+    // controls when the data word arrives.
+    wire load_stall = ex_valid && ex_mem_read && !load_pending;
 
     // =========================================================================
     // RV32M stall (multiply and divide)
@@ -125,63 +149,84 @@ module cpu_top #(
     // once that moved out the 32x32->64 multiply carry chain held it to
     // 39.377 MHz - against a 50 MHz constraint in both cases. They now run on
     // multiplier.v (3 cycles) and divider.v (34 cycles, or 2 for divide-by-zero
-    // and the MIN_INT/-1 overflow) with the CPU stalled meanwhile.
+    // and the MIN_INT/-1 overflow) with the pipeline stalled meanwhile.
     //
     // mcycle_started mirrors load_pending: it keeps the start signal a
-    // single-cycle pulse even though the instruction sits in the execute stage
-    // for the whole operation, and clears as soon as the instruction retires.
-    wire is_mul = (alu_op == `ALU_MUL)  || (alu_op == `ALU_MULH) ||
-                  (alu_op == `ALU_MULHSU) || (alu_op == `ALU_MULHU);
-    wire is_div = (alu_op == `ALU_DIV)  || (alu_op == `ALU_DIVU) ||
-                  (alu_op == `ALU_REM)  || (alu_op == `ALU_REMU);
+    // single-cycle pulse even though the instruction sits in EX for the whole
+    // operation, and clears as soon as the instruction retires.
+    wire is_mul = (ex_alu_op == `ALU_MUL)    || (ex_alu_op == `ALU_MULH) ||
+                  (ex_alu_op == `ALU_MULHSU) || (ex_alu_op == `ALU_MULHU);
+    wire is_div = (ex_alu_op == `ALU_DIV)    || (ex_alu_op == `ALU_DIVU) ||
+                  (ex_alu_op == `ALU_REM)    || (ex_alu_op == `ALU_REMU);
 
-    wire is_mcycle     = is_mul || is_div;
-    wire mcycle_start  = is_mcycle && !mcycle_started;
-    wire mcycle_done   = is_div ? div_done : mul_done;
-    wire mcycle_stall  = is_mcycle && !mcycle_done;
+    wire is_mcycle    = ex_valid && (is_mul || is_div);
+    wire mcycle_start = is_mcycle && !mcycle_started;
+    wire mcycle_done  = is_div ? div_done : mul_done;
+    wire mcycle_stall = is_mcycle && !mcycle_done;
 
     wire stall     = load_stall || mcycle_stall;
-    wire wb_enable = reg_write && !stall;
+    wire wb_enable = ex_valid && ex_reg_write && !stall;
+
+    // =========================================================================
+    // Forwarding: EX write-back -> ID register read
+    // =========================================================================
+    // The instruction in ID reads the register file in the same cycle the one
+    // in EX writes it, so the read would miss by exactly one instruction. Only
+    // one instruction is ever in flight between the two stages, so a single
+    // forwarding path is enough - no hazard can reach further back, because by
+    // then the value is already in the register file.
+    //
+    // wb_enable already accounts for stalls, so while EX is waiting on the
+    // memory, multiplier or divider nothing is forwarded and nothing is latched
+    // into ID/EX either.
+    wire fwd_rs1 = wb_enable && (ex_rd != 5'd0) && (ex_rd == id_rs1);
+    wire fwd_rs2 = wb_enable && (ex_rd != 5'd0) && (ex_rd == id_rs2);
+
+    wire [31:0] id_rs1_data = fwd_rs1 ? reg_write_data : rf_rd1;
+    wire [31:0] id_rs2_data = fwd_rs2 ? reg_write_data : rf_rd2;
 
     // =========================================================================
     // Debug assignment
     // =========================================================================
-    assign debug_pc = execute_valid ? (ifid_pc + 32'd4) : pc;
+    assign debug_pc = ex_valid ? (ex_pc + 32'd4) : pc;
 
     // =========================================================================
     // Memory Interface / Address Decoding Outputs
     // =========================================================================
     // The implemented data RAM is 64 KB, so the valid scratch-memory region is
     // 0x0001_0000 - 0x0001_FFFF.
-    wire imem_sel  = (alu_result < 32'h0000_8000);
-    wire dmem_sel  = (alu_result >= 32'h0001_0000) && (alu_result <= 32'h0001_FFFF);
+    wire imem_sel = (alu_result < 32'h0000_8000);
+    wire dmem_sel = (alu_result >= 32'h0001_0000) && (alu_result <= 32'h0001_FFFF);
     // MMIO: 0x8000_0010 = UART TX data register
     //       0x8000_0014 = UART TX status register (bit0 = busy)
     //       0x8000_0018 = UART RX data register
     //       0x8000_001C = UART RX status register (bit0 = ready)
-    wire mmio_uart_tx_sel    = (alu_result == 32'h8000_0010);
-    wire mmio_uart_stat_sel  = (alu_result == 32'h8000_0014);
-    wire mmio_uart_rx_sel    = (alu_result == 32'h8000_0018);
+    wire mmio_uart_tx_sel      = (alu_result == 32'h8000_0010);
+    wire mmio_uart_stat_sel    = (alu_result == 32'h8000_0014);
+    wire mmio_uart_rx_sel      = (alu_result == 32'h8000_0018);
     wire mmio_uart_rx_stat_sel = (alu_result == 32'h8000_001C);
-    wire mmio_sel            = mmio_uart_tx_sel || mmio_uart_stat_sel || 
-                               mmio_uart_rx_sel || mmio_uart_rx_stat_sel;
+    wire mmio_sel              = mmio_uart_tx_sel || mmio_uart_stat_sel ||
+                                 mmio_uart_rx_sel || mmio_uart_rx_stat_sel;
+
+    wire ex_store = ex_valid && ex_mem_write;
+    wire ex_load  = ex_valid && ex_mem_read;
 
     assign mem_addr       = alu_result;
-    assign mem_write_data = rs2_data;
-    assign mem_write_en   = mem_write && !dmem_sel && !mmio_sel;
-    assign mem_read_en    = mem_read && !dmem_sel && !mmio_sel;
+    assign mem_write_data = ex_rs2_data;
+    assign mem_write_en   = ex_store && !dmem_sel && !mmio_sel;
+    assign mem_read_en    = ex_load  && !dmem_sel && !mmio_sel;
 
     // =========================================================================
     // UART TX MMIO
     // =========================================================================
     wire uart_busy;
-    // tx_start fires for one clock when CPU does SW to UART TX address
-    wire uart_start = mem_write && mmio_uart_tx_sel;
+    // tx_start fires for one clock when the CPU stores to the UART TX address
+    wire uart_start = ex_store && mmio_uart_tx_sel;
 
     uart_tx uart_tx_inst (
         .clk      (clk),
         .rst_n    (rst_n),
-        .tx_data  (rs2_data[7:0]),
+        .tx_data  (ex_rs2_data[7:0]),
         .tx_start (uart_start),
         .tx_pin   (uart_tx_pin),
         .tx_busy  (uart_busy)
@@ -192,8 +237,8 @@ module cpu_top #(
     // =========================================================================
     wire [7:0] uart_rx_data;
     wire       uart_rx_ready;
-    // rx_clear fires when CPU reads UART RX data register (LW to 0x8000_0018)
-    wire uart_rx_clear = mem_read && mmio_uart_rx_sel && !stall;
+    // rx_clear fires once, in the data cycle of the load that reads RX data
+    wire uart_rx_clear = ex_load && mmio_uart_rx_sel && !stall;
 
     uart_rx uart_rx_inst (
         .clk      (clk),
@@ -207,9 +252,8 @@ module cpu_top #(
     // =========================================================================
     // Module Instantiations
     // =========================================================================
-    
+
     // 1. Instruction Memory / .rodata Dual-Port ROM
-    wire [31:0] rom_data_read;
     instruction_memory #(
         .INIT_FILE (INIT_FILE)
     ) imem (
@@ -221,93 +265,87 @@ module cpu_top #(
         .addr_b     (alu_result),
         .dout_b     (rom_data_read)
     );
-    
-    // 2. Instruction Decoder
+
+    // 2. Instruction Decoder (ID)
     instruction_decoder dec (
-        .inst      (ifid_inst),
-        .rs1       (rs1),
-        .rs2       (rs2),
-        .rd        (rd),
-        .reg_write (reg_write),
-        .imm_type  (imm_type),
-        .alu_op    (alu_op),
-        .alu_src_b (alu_src_b),
-        .branch    (branch),
-        .jump      (jump),
-        .mem_read  (mem_read),
-        .mem_write (mem_write),
-        .wb_sel    (wb_sel)
+        .inst      (id_inst),
+        .rs1       (id_rs1),
+        .rs2       (id_rs2),
+        .rd        (id_rd),
+        .reg_write (id_reg_write),
+        .imm_type  (id_imm_type),
+        .alu_op    (id_alu_op),
+        .alu_src_b (id_alu_src_b),
+        .branch    (id_branch),
+        .jump      (id_jump),
+        .mem_read  (id_mem_read),
+        .mem_write (id_mem_write),
+        .wb_sel    (id_wb_sel)
     );
-    
-    // 3. Immediate Generator
+
+    // 3. Immediate Generator (ID)
     imm_gen igen (
-        .inst     (ifid_inst),
-        .imm_type (imm_type),
-        .imm      (imm)
+        .inst     (id_inst),
+        .imm_type (id_imm_type),
+        .imm      (id_imm)
     );
-    
-    // 4. Register File
+
+    // 4. Register File (read in ID, written from EX)
     register_file regfile (
-        .clk        (clk),
-        .rst        (!rst_n),
-        .rs1        (rs1),
-        .rd1        (rs1_data),
-        .rs2        (rs2),
-        .rd2        (rs2_data),
-        .rd         (rd),
-        .wd         (reg_write_data),
-        .we         (wb_enable),
-        .dbg_x1     (debug_x1)
+        .clk    (clk),
+        .rst    (!rst_n),
+        .rs1    (id_rs1),
+        .rd1    (rf_rd1),
+        .rs2    (id_rs2),
+        .rd2    (rf_rd2),
+        .rd     (ex_rd),
+        .wd     (reg_write_data),
+        .we     (wb_enable),
+        .dbg_x1 (debug_x1)
     );
-    
-    // 5. Control Unit
+
+    // 5. Control Unit (EX)
     control_unit ctrl (
-        .opcode     (ifid_inst[6:0]),
-        .funct3     (ifid_inst[14:12]),
-        .branch     (branch),
-        .jump       (jump),
+        .opcode     (ex_opcode),
+        .funct3     (ex_funct3),
+        .branch     (ex_branch),
+        .jump       (ex_jump),
         .alu_zero   (alu_zero),
         .alu_result (alu_result),
         .alu_src_a  (alu_src_a),
         .pc_sel     (pc_sel)
     );
-    
-    // 6. ALU
+
+    // 6. ALU (EX)
     alu alu_inst (
         .a      (alu_in_a),
         .b      (alu_in_b),
-        .alu_op (alu_op),
+        .alu_op (ex_alu_op),
         .result (alu_result),
         .zero   (alu_zero)
     );
 
     // 6b. Multi-cycle Multiplier (RV32M MUL/MULH/MULHSU/MULHU)
-    wire [31:0] mul_result;
-    wire        mul_done;
-
     multiplier mul_unit (
         .clk    (clk),
         .rst_n  (rst_n),
         .start  (mcycle_start && is_mul),
-        .a      (rs1_data),
-        .b      (rs2_data),
-        .op     (alu_op),
+        .a      (ex_rs1_data),
+        .b      (ex_rs2_data),
+        .op     (ex_alu_op),
         .result (mul_result),
         .done   (mul_done)
     );
 
     // 6c. Multi-cycle Divider (RV32M DIV/DIVU/REM/REMU)
-    wire [31:0] div_result;
-    wire        div_done;
-
     divider div_unit (
         .clk       (clk),
         .rst_n     (rst_n),
         .start     (mcycle_start && is_div),
-        .a         (rs1_data),
-        .b         (rs2_data),
-        .is_signed ((alu_op == `ALU_DIV) || (alu_op == `ALU_REM)),
-        .want_rem  ((alu_op == `ALU_REM) || (alu_op == `ALU_REMU)),
+        .a         (ex_rs1_data),
+        .b         (ex_rs2_data),
+        .is_signed ((ex_alu_op == `ALU_DIV) || (ex_alu_op == `ALU_REM)),
+        .want_rem  ((ex_alu_op == `ALU_REM) || (ex_alu_op == `ALU_REMU)),
         .result    (div_result),
         .done      (div_done)
     );
@@ -324,44 +362,39 @@ module cpu_top #(
     data_memory dmem (
         .clk        (clk),
         .addr       (alu_result),
-        .write_data (rs2_data),
-        .write_en   (mem_write && dmem_sel),
-        .read_en    (mem_read && dmem_sel),
-        .funct3     (ifid_inst[14:12]),
+        .write_data (ex_rs2_data),
+        .write_en   (ex_store && dmem_sel),
+        .read_en    (ex_load  && dmem_sel),
+        .funct3     (ex_funct3),
         .read_data  (internal_mem_read_data)
     );
 
     // =========================================================================
-    // Datapath Multiplexers
+    // Datapath Multiplexers (EX)
     // =========================================================================
-    
-    // ALU Operand A Select MUX
+
+    // ALU Operand A: PC for AUIPC, rs1 otherwise
     always @(*) begin
-        if (alu_src_a) begin
-            alu_in_a = ifid_pc;
-        end else begin
-            alu_in_a = rs1_data;
-        end
+        if (alu_src_a) alu_in_a = ex_pc;
+        else           alu_in_a = ex_rs1_data;
     end
-    
-    // ALU Operand B Select MUX
+
+    // ALU Operand B: immediate or rs2
     always @(*) begin
-        if (alu_src_b) begin
-            alu_in_b = imm;
-        end else begin
-            alu_in_b = rs2_data;
-        end
+        if (ex_alu_src_b) alu_in_b = ex_imm;
+        else              alu_in_b = ex_rs2_data;
     end
-    
-    // Register Write-back Select MUX
-    reg [31:0] selected_mem_data;
-    wire [1:0] mem_byte_offset = alu_result[1:0];
+
+    // Load data select
+    reg  [31:0] selected_mem_data;
+    wire [1:0]  mem_byte_offset = alu_result[1:0];
+
     always @(*) begin
         if (dmem_sel) begin
             selected_mem_data = internal_mem_read_data;
         end else if (imem_sel) begin
             // Byte/halfword selection for .rodata loads (LBU, LB, LHU, LH, LW)
-            case (ifid_inst[14:12])
+            case (ex_funct3)
                 3'b000: begin // LB - signed byte
                     case (mem_byte_offset)
                         2'b00: selected_mem_data = {{24{rom_data_read[7]}},  rom_data_read[7:0]};
@@ -403,19 +436,19 @@ module cpu_top #(
         end
     end
 
+    // Register write-back select
     always @(*) begin
-        case (wb_sel)
+        case (ex_wb_sel)
             2'd0:    reg_write_data = exec_result;
             2'd1:    reg_write_data = selected_mem_data;
-            2'd2:    reg_write_data = ifid_pc + 32'd4;
+            2'd2:    reg_write_data = ex_pc + 32'd4;
             default: reg_write_data = exec_result;
         endcase
     end
 
-    // Next PC Select MUX
-    // JALR target address lower bit must be cleared to 0 (RISC-V spec)
-    wire [31:0] jalr_target = (rs1_data + imm) & 32'hFFFF_FFFE;
-    wire [31:0] branch_target = ifid_pc + imm;
+    // Next PC select. JALR clears the low bit of the target (RISC-V spec).
+    wire [31:0] jalr_target   = (ex_rs1_data + ex_imm) & 32'hFFFF_FFFE;
+    wire [31:0] branch_target = ex_pc + ex_imm;
 
     always @(*) begin
         if (branch_or_jump) begin
@@ -430,31 +463,70 @@ module cpu_top #(
     end
     assign next_pc = next_pc_temp;
 
-    // =============x============================================================
+    // =========================================================================
     // Pipeline Registers
     // =========================================================================
+    // A taken branch or jump is only known in EX, so the two instructions
+    // behind it - one in ID, one being fetched - are discarded by clearing
+    // their valid bits. The ID/EX payload is left alone; ex_valid gates
+    // everything that could have an effect.
     always @(posedge clk) begin
         if (!rst_n) begin
-            pc           <= 32'd0;
-            ifid_pc      <= 32'd0;
-            ifid_valid   <= 1'b0;
+            pc             <= 32'd0;
+            ifid_pc        <= 32'd0;
+            ifid_valid     <= 1'b0;
+            ex_valid       <= 1'b0;
+            ex_pc          <= 32'd0;
+            ex_rs1_data    <= 32'd0;
+            ex_rs2_data    <= 32'd0;
+            ex_imm         <= 32'd0;
+            ex_rd          <= 5'd0;
+            ex_alu_op      <= `ALU_ADD;
+            ex_reg_write   <= 1'b0;
+            ex_alu_src_b   <= 1'b0;
+            ex_branch      <= 1'b0;
+            ex_jump        <= 1'b0;
+            ex_mem_read    <= 1'b0;
+            ex_mem_write   <= 1'b0;
+            ex_wb_sel      <= 2'd0;
+            ex_funct3      <= 3'd0;
+            ex_opcode      <= 7'd0;
             load_pending   <= 1'b0;
             mcycle_started <= 1'b0;
         end else if (stall) begin
-            // Hold everything until the memory, multiplier or divider answers.
+            // Hold every stage until the memory, multiplier or divider answers.
             load_pending   <= 1'b1;
             mcycle_started <= 1'b1;
         end else begin
             load_pending   <= 1'b0;
             mcycle_started <= 1'b0;
-            pc           <= next_pc;
+
+            pc <= next_pc;
 
             if (branch_or_jump) begin
                 ifid_pc    <= 32'd0;
                 ifid_valid <= 1'b0;
+                ex_valid   <= 1'b0;
             end else begin
                 ifid_pc    <= pc;
                 ifid_valid <= 1'b1;
+
+                ex_valid     <= ifid_valid;
+                ex_pc        <= ifid_pc;
+                ex_rs1_data  <= id_rs1_data;
+                ex_rs2_data  <= id_rs2_data;
+                ex_imm       <= id_imm;
+                ex_rd        <= id_rd;
+                ex_alu_op    <= id_alu_op;
+                ex_reg_write <= id_reg_write;
+                ex_alu_src_b <= id_alu_src_b;
+                ex_branch    <= id_branch;
+                ex_jump      <= id_jump;
+                ex_mem_read  <= id_mem_read;
+                ex_mem_write <= id_mem_write;
+                ex_wb_sel    <= id_wb_sel;
+                ex_funct3    <= id_inst[14:12];
+                ex_opcode    <= id_inst[6:0];
             end
         end
     end
