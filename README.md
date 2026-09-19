@@ -18,8 +18,11 @@ RV32I 命令セットを段階的に実装し、シングルサイクルCPU か�
 - 命令ROM・データRAM を BSRAM に配置 (ロード時1サイクルストール)
 - `sim/` の全テストベンチ (21本) がパスする状態
 - Tang Primer 25K で合成・配置配線が通り、50 MHz 制約を満たす
-- **実機 (Tang Primer 25K) で動作確認済み** — `loop55` を SRAM に書き込み、
-  LED[0] のハートビートと LED[1] 点灯 (x1 = 55 到達) を確認
+- **実機 (Tang Primer 25K) で動作確認済み**
+  - `loop55` : LED[0] のハートビートと LED[1] 点灯 (x1 = 55 到達)
+  - `printf_demo` : UART (COM ポート, 115200bps) にシミュレーションと同一の
+    出力。`.bss` クリア、`.rodata` の LBU 読み出し、除算器を使う10進変換、
+    16進変換、UART RX のエコーまで一通り動作
 
 ### 実測値 (printf_demo.hex で合成)
 
@@ -281,7 +284,20 @@ powershell -ExecutionPolicy Bypass -File tools/program.ps1
 powershell -ExecutionPolicy Bypass -File tools/program.ps1 -Flash
 ```
 
-6. リセット (S1) 後の期待動作:
+6. UART を使うサンプルなら、受信を確認します。
+
+```powershell
+# 8秒間受信する (ポートは1つだけなら自動検出)
+powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1
+
+# 受信しつつ4秒後に 'Z' を送ってエコーを確認する
+powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Seconds 10 -Send 'Z' -SendAfter 4
+```
+
+> 起動メッセージは書き込み直後に流れてしまいます。取り逃したらリセット (S1) を
+> 押しながら受信してください。
+
+7. リセット (S1) 後の期待動作:
   - `loop55` : `led[0]` が約1.5Hzで点滅 (クロック生存)、`led[1]` が点灯
     (CPU が x1 = 55 を計算完了)
   - `button_led` : `user_btn` (S2) を押すたびに `led[1]` が反転
@@ -302,7 +318,7 @@ powershell -ExecutionPolicy Bypass -File tools/program.ps1 -Flash
 > Python 系の環境変数を外して呼び出します。手で `programmer_cli` を叩いて同じ
 > エラーが出たときは、これらの変数を外してください。
 
-### 7. 追加で便利な確認コマンド
+### 8. 追加で便利な確認コマンド
 
 ```powershell
 riscv64-unknown-elf-objdump -d examples/loop55.elf
