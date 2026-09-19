@@ -1,8 +1,9 @@
 // =============================================================================
 // alu.v - 32-bit ALU for RISC-V RV32I CPU
 // =============================================================================
-// Operations: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU, and the
-//             RV32M multiplies. Division lives in divider.v (multi-cycle).
+// Operations: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU.
+// The RV32M multiply and divide live in multiplier.v and divider.v, which are
+// multi-cycle; this module stays purely combinational.
 //
 // Key differences from x86 ALU:
 //   - No flag registers (CF, ZF, SF, OF, PF, AF) — not needed!
@@ -21,11 +22,6 @@ module alu (
     output reg  [31:0] result,   // Operation result
     output wire        zero      // 1 when result == 0 (used for branch)
 );
-
-    // Intermediate 64-bit results for multiplication
-    wire signed [63:0] mul_signed          = $signed(a) * $signed(b);
-    wire signed [63:0] mul_signed_unsigned = $signed(a) * $signed({1'b0, b});
-    wire        [63:0] mul_unsigned        = {32'd0, a} * {32'd0, b};
 
     // zero flag: used by BEQ/BNE branch logic in control unit
     assign zero = (result == 32'd0);
@@ -91,23 +87,16 @@ module alu (
             `ALU_PASS_B: result = b;
 
             // ------------------------------------------------------------------
-            // M Extension: Multiplication (MUL, MULH, MULHSU, MULHU)
+            // M Extension: Multiply and Divide
             // ------------------------------------------------------------------
-            `ALU_MUL:    result = a * b;
-            `ALU_MULH:   result = mul_signed[63:32];
-            `ALU_MULHSU: result = mul_signed_unsigned[63:32];
-            `ALU_MULHU:  result = mul_unsigned[63:32];
-
-            // ------------------------------------------------------------------
-            // M Extension: Division and Remainder (DIV, DIVU, REM, REMU)
-            // ------------------------------------------------------------------
-            // Not handled here. The 32-iteration restoring loop used to be
-            // unrolled into combinational logic in this module, and it became
-            // the critical path of the whole design: place & route reported a
-            // maximum frequency of 5.031 MHz against the 50 MHz constraint.
-            // divider.v now does it over 34 cycles and cpu_top stalls; the
-            // result is muxed in at write-back, so these opcodes fall through
-            // to the default below.
+            // Neither is handled here any more; both were combinational and
+            // both took a turn as the critical path of the design. The divider
+            // held it down to 5.031 MHz, and once that moved out the 32x32->64
+            // multiply carry chain held it at 39.377 MHz - against a 50 MHz
+            // constraint in both cases. multiplier.v and divider.v now run them
+            // over a few cycles with the CPU stalled, and their results are
+            // muxed in at write-back, so these opcodes fall through to the
+            // default below.
 
             default:     result = 32'd0;
         endcase

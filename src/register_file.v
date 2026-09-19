@@ -50,10 +50,18 @@ module register_file (
 
     // =========================================================================
     // Asynchronous read
-    // x0 always returns 0 regardless of what is stored
     // =========================================================================
-    assign rd1    = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
-    assign rd2    = (rs2 == 5'd0) ? 32'd0 : regs[rs2];
+    // regs[0] is held at zero by construction: reset clears it and the write
+    // port above refuses to write x0, so nothing can ever disturb it. Reading
+    // it out directly is therefore already correct, and it keeps a second mux
+    // off the read path - the register file read sits on the critical path of
+    // the design (instruction ROM -> register file -> ALU), so that mux cost
+    // real frequency.
+    //
+    // The `rd != 5'd0` guard on the write is what actually protects x0. Do not
+    // remove it.
+    assign rd1    = regs[rs1];
+    assign rd2    = regs[rs2];
     assign dbg_x1 = regs[1]; // Debug: always expose x1 for FPGA LED display
 
 endmodule

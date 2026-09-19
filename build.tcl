@@ -26,8 +26,18 @@ open_project $proj_file
 # file, both memories and the UART all reported as "swept in optimizing". The
 # build still succeeds and produces a bitstream containing just the LED blinker,
 # so the board looks alive while running no CPU at all.
-set init_hex "examples/loop55.hex"
-set src_hex  [file join $root_dir $init_hex]
+# Take the hex path from the INIT_FILE default in fpga_top.v rather than
+# repeating it here, so the staged copy can never drift from what the RTL asks
+# $readmemh for.
+set fh [open [file join $root_dir src fpga_top.v] r]
+set fpga_top_src [read $fh]
+close $fh
+
+if {![regexp {parameter\s+INIT_FILE\s*=\s*"([^"]+)"} $fpga_top_src -> init_hex]} {
+    error "Could not find the INIT_FILE parameter default in src/fpga_top.v"
+}
+
+set src_hex [file join $root_dir $init_hex]
 
 if {![file exists $src_hex]} {
     error "ROM image not found: $src_hex - build it first (see README)"

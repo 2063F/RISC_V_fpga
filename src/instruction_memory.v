@@ -13,6 +13,8 @@
 // appears in the execute cycle, exactly the timing cpu_top had when it latched
 // a combinational read into its own ifid_inst register. `ce` freezes it while
 // the CPU stalls, so a stalled instruction is not overwritten by the next one.
+// It reports out-of-range fetches through dout_valid instead of substituting a
+// NOP itself; cpu_top folds that into the flush mask it already needs.
 //
 // Port B reads .rodata constants. Its data also arrives one cycle late, which
 // the CPU covers with the same one-cycle load stall it uses for the RAM.
@@ -24,9 +26,10 @@ module instruction_memory #(
     input  wire        clk,
 
     // Port A: instruction fetch
-    input  wire        ce,      // clock enable (0 = hold dout, used while stalled)
+    input  wire        ce,          // clock enable (0 = hold dout, used while stalled)
     input  wire [31:0] addr,
-    output wire [31:0] dout,
+    output wire [31:0] dout,        // raw ROM word, NOT masked for range
+    output wire        dout_valid,  // 0 = addr was outside the ROM
 
     // Port B: data read (.rodata constants)
     input  wire [31:0] addr_b,
@@ -61,7 +64,13 @@ module instruction_memory #(
         q_b_in_range <= addr_b_in_range;
     end
 
-    assign dout   = q_a_in_range ? q_a : NOP_INST;
+    // Port A hands the raw word and a validity bit to cpu_top, which already
+    // has to mask flushed slots to a NOP. Masking here as well would put two
+    // muxes back to back on the fetch path, and that path (ROM -> register file
+    // -> ALU) is the critical path of the design.
+    assign dout       = q_a;
+    assign dout_valid = q_a_in_range;
+
     assign dout_b = q_b_in_range ? q_b : 32'h0000_0000;
 
     // =========================================================================

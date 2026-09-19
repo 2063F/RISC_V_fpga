@@ -10,6 +10,7 @@
         <File path="../../src/instruction_decoder.v" type="file.verilog" enable="1"/>
         <File path="../../src/alu.v" type="file.verilog" enable="1"/>
         <File path="../../src/divider.v" type="file.verilog" enable="1"/>
+        <File path="../../src/multiplier.v" type="file.verilog" enable="1"/>
         <File path="../../src/register_file.v" type="file.verilog" enable="1"/>
         <File path="../../src/imm_gen.v" type="file.verilog" enable="1"/>
         <File path="../../src/instruction_memory.v" type="file.verilog" enable="1"/>

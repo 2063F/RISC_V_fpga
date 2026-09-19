@@ -55,7 +55,7 @@ module cpu_top #(
     reg  [31:0] ifid_pc;
     reg         ifid_valid;
     reg         load_pending;   // 1 during the second (data) cycle of a load
-    reg         div_started;    // 1 once the divider has been handed this instruction
+    reg         mcycle_started; // 1 once the multiplier/divider has been handed this instruction
     wire [31:0] next_pc;
 
     // The instruction ROM's port-A output register IS the IF/ID instruction
@@ -63,7 +63,12 @@ module cpu_top #(
     // comes out in the execute cycle. A flushed slot is masked to a NOP here
     // rather than by clearing the register, which lives inside the BSRAM.
     wire [31:0] fetched_inst;
-    wire [31:0] ifid_inst = ifid_valid ? fetched_inst : NOP_INST;
+    wire        fetched_valid;
+
+    // One mux on the fetch path, not two: both selects are register outputs, so
+    // combining them costs no extra logic on the data path itself.
+    wire        inst_valid = ifid_valid && fetched_valid;
+    wire [31:0] ifid_inst  = inst_valid ? fetched_inst : NOP_INST;
     
     // Decoder outputs
     wire [4:0]  rs1;
@@ -113,22 +118,29 @@ module cpu_top #(
     wire load_stall = mem_read && !load_pending;
 
     // =========================================================================
-    // Divide stall
+    // RV32M stall (multiply and divide)
     // =========================================================================
-    // DIV/DIVU/REM/REMU run on the multi-cycle divider (34 cycles for a real
-    // division, 2 for divide-by-zero and the MIN_INT/-1 overflow). The whole
-    // restoring loop used to be combinational inside the ALU and was the
-    // critical path of the design - 5.031 MHz against a 50 MHz constraint.
+    // Both used to be combinational inside the ALU and both took a turn as the
+    // critical path of the whole design: the divider held it to 5.031 MHz, and
+    // once that moved out the 32x32->64 multiply carry chain held it to
+    // 39.377 MHz - against a 50 MHz constraint in both cases. They now run on
+    // multiplier.v (3 cycles) and divider.v (34 cycles, or 2 for divide-by-zero
+    // and the MIN_INT/-1 overflow) with the CPU stalled meanwhile.
     //
-    // div_started mirrors load_pending: it makes div_start a single-cycle pulse
-    // even though the instruction sits in the execute stage for the whole
-    // division, and it is cleared as soon as the instruction retires.
-    wire is_div    = (alu_op == `ALU_DIV)  || (alu_op == `ALU_DIVU) ||
-                     (alu_op == `ALU_REM)  || (alu_op == `ALU_REMU);
-    wire div_start = is_div && !div_started;
-    wire div_stall = is_div && !div_done;
+    // mcycle_started mirrors load_pending: it keeps the start signal a
+    // single-cycle pulse even though the instruction sits in the execute stage
+    // for the whole operation, and clears as soon as the instruction retires.
+    wire is_mul = (alu_op == `ALU_MUL)  || (alu_op == `ALU_MULH) ||
+                  (alu_op == `ALU_MULHSU) || (alu_op == `ALU_MULHU);
+    wire is_div = (alu_op == `ALU_DIV)  || (alu_op == `ALU_DIVU) ||
+                  (alu_op == `ALU_REM)  || (alu_op == `ALU_REMU);
 
-    wire stall     = load_stall || div_stall;
+    wire is_mcycle     = is_mul || is_div;
+    wire mcycle_start  = is_mcycle && !mcycle_started;
+    wire mcycle_done   = is_div ? div_done : mul_done;
+    wire mcycle_stall  = is_mcycle && !mcycle_done;
+
+    wire stall     = load_stall || mcycle_stall;
     wire wb_enable = reg_write && !stall;
 
     // =========================================================================
@@ -201,12 +213,13 @@ module cpu_top #(
     instruction_memory #(
         .INIT_FILE (INIT_FILE)
     ) imem (
-        .clk    (clk),
-        .ce     (!stall),
-        .addr   (pc),
-        .dout   (fetched_inst),
-        .addr_b (alu_result),
-        .dout_b (rom_data_read)
+        .clk        (clk),
+        .ce         (!stall),
+        .addr       (pc),
+        .dout       (fetched_inst),
+        .dout_valid (fetched_valid),
+        .addr_b     (alu_result),
+        .dout_b     (rom_data_read)
     );
     
     // 2. Instruction Decoder
@@ -268,14 +281,29 @@ module cpu_top #(
         .zero   (alu_zero)
     );
 
-    // 6b. Multi-cycle Divider (RV32M DIV/DIVU/REM/REMU)
+    // 6b. Multi-cycle Multiplier (RV32M MUL/MULH/MULHSU/MULHU)
+    wire [31:0] mul_result;
+    wire        mul_done;
+
+    multiplier mul_unit (
+        .clk    (clk),
+        .rst_n  (rst_n),
+        .start  (mcycle_start && is_mul),
+        .a      (rs1_data),
+        .b      (rs2_data),
+        .op     (alu_op),
+        .result (mul_result),
+        .done   (mul_done)
+    );
+
+    // 6c. Multi-cycle Divider (RV32M DIV/DIVU/REM/REMU)
     wire [31:0] div_result;
     wire        div_done;
 
     divider div_unit (
         .clk       (clk),
         .rst_n     (rst_n),
-        .start     (div_start),
+        .start     (mcycle_start && is_div),
         .a         (rs1_data),
         .b         (rs2_data),
         .is_signed ((alu_op == `ALU_DIV) || (alu_op == `ALU_REM)),
@@ -285,9 +313,10 @@ module cpu_top #(
     );
 
     // Write-back value for ALU-class instructions. alu_result itself still
-    // drives address decoding and the branch comparison, which divides never
-    // use, so only the register write-back needs the divider's answer.
-    wire [31:0] exec_result = is_div ? div_result : alu_result;
+    // drives address decoding and the branch comparison, which multiplies and
+    // divides never use, so only the register write-back needs these answers.
+    wire [31:0] exec_result = is_div ? div_result :
+                              is_mul ? mul_result : alu_result;
 
     // 7. Internal Data Memory (RAM)
     wire [31:0] internal_mem_read_data;
@@ -409,15 +438,15 @@ module cpu_top #(
             pc           <= 32'd0;
             ifid_pc      <= 32'd0;
             ifid_valid   <= 1'b0;
-            load_pending <= 1'b0;
-            div_started  <= 1'b0;
+            load_pending   <= 1'b0;
+            mcycle_started <= 1'b0;
         end else if (stall) begin
-            // Hold everything until the memory or the divider comes back.
-            load_pending <= 1'b1;
-            div_started  <= 1'b1;
+            // Hold everything until the memory, multiplier or divider answers.
+            load_pending   <= 1'b1;
+            mcycle_started <= 1'b1;
         end else begin
-            load_pending <= 1'b0;
-            div_started  <= 1'b0;
+            load_pending   <= 1'b0;
+            mcycle_started <= 1'b0;
             pc           <= next_pc;
 
             if (branch_or_jump) begin

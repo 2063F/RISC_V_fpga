@@ -136,8 +136,10 @@ module tb_cpu_top;
         $display("[PC=%0d] Executed LUI x5, 0x12345", debug_pc - 4);
         check_reg(5, 32'h12345000, "x5 = 0x12345000");
 
-        // Cycle 6: MUL x6, x1, x2 (PC=20)
+        // MUL x6, x1, x2 (PC=20)
+        // MUL now runs on the multi-cycle multiplier: 3 cycles of stall.
         #20;
+        #(3 * 20);
         $display("[PC=%0d] Executed MUL x6, x1, x2", debug_pc - 4);
         check_reg(6, 32'd200, "x6 = x1 * x2");
 
