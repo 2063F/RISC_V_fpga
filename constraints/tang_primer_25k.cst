@@ -67,8 +67,11 @@ IO_PORT "kbd_col_n[7]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 // --- 8x8 赤/緑 ドットマトリクス LED (LTP-12188M-08, led_matrix_bicolor.v) ---
 // ピン番号は Sipeed 公式サンプル pmod_led.cst の pmod_io[16..39] と同じ。
 // どのコネクタのどの端子かは、配線前に Dock の回路図 / シルクで必ず確認すること（未確認）。
-// 行 (アノード): PNP トランジスタのベースへ。Low で点灯する行を選ぶ。
-// 列 (カソード): 電流制限抵抗を通して LED のカソードへ。Low で点灯。
+// 行 (アノード): 680Ω → PNP のベースへ。Low で点灯する行を選ぶ。
+//   led_row[k] -> LED 行(k+1): LED ピン 22,19,16,13,3,6,9,12 (k=0..7)
+// 列 (カソード): 68Ω → LED のカソードへ。Low で点灯 (LED 1個分 約12mA を吸い込む)。
+//   led_col_r[k] -> LED 列(k+1) 赤: LED ピン 23,20,17,14,2,5,8,11
+//   led_col_g[k] -> LED 列(k+1) 緑: LED ピン 24,21,18,15,1,4,7,10
 IO_LOC "led_row[0]" L2;
 IO_LOC "led_row[1]" L1;
 IO_LOC "led_row[2]" K1;
@@ -93,14 +96,14 @@ IO_LOC "led_col_r[4]" E1;
 IO_LOC "led_col_r[5]" F2;
 IO_LOC "led_col_r[6]" D1;
 IO_LOC "led_col_r[7]" E3;
-IO_PORT "led_col_r[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_r[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_r[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_r[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_r[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_r[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_r[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_r[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_col_r[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_r[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_r[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_r[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_r[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_r[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_r[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_r[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
 IO_LOC "led_col_g[0]" L4;
 IO_LOC "led_col_g[1]" J1;
 IO_LOC "led_col_g[2]" H1;
@@ -109,11 +112,11 @@ IO_LOC "led_col_g[4]" H2;
 IO_LOC "led_col_g[5]" H4;
 IO_LOC "led_col_g[6]" L3;
 IO_LOC "led_col_g[7]" J2;
-IO_PORT "led_col_g[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_g[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_g[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_g[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_g[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_g[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_g[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
-IO_PORT "led_col_g[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_PORT "led_col_g[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_g[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_g[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_g[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_g[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_g[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_g[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_PORT "led_col_g[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
