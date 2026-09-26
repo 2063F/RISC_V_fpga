@@ -3,8 +3,8 @@
 // tb_othello_fpga.v - オセロAI (othello_ai_c/othello_AI/othello_fpga.c) の CPU 統合テスト
 // =============================================================================
 // 起動メニューを受信したあと、UART から BESTMOVE コマンドを送り、
-// 返ってきた "MOVE ..." 行を期待値と比較する。探索に掛かったサイクル数も表示するので、
-// OTHELLO_NODES_PER_MS (思考時間をノード数で近似する係数) の較正にも使う。
+// 返ってきた "MOVE ..." 行を期待値と比較する。持ち時間を指定した探索が
+// 時間内 (サイクルカウンタで計測) に応答するかも確認する。
 //
 //   iverilog -I src -o sim/tb_othello_fpga.out sim/tb_othello_fpga.v src/cpu_top.v ... (src/*.v)
 //   vvp sim/tb_othello_fpga.out
@@ -103,7 +103,7 @@ module tb_othello_fpga;
     integer fail_count = 0;
     time    t_sent;
 
-    task check_bestmove(input [8*96-1:0] cmd, input [8*32-1:0] exp_prefix);
+    task check_bestmove(input [8*96-1:0] cmd, input [8*32-1:0] exp_prefix, input integer max_ms);
         integer before;
         begin
             wait_prompt;
@@ -115,6 +115,10 @@ module tb_othello_fpga;
             t_sent = $time;
             wait (line_len == 1);
             $display("  [search took %0d cycles]", ($time - t_sent) / CLK_PERIOD);
+            if (($time - t_sent) > max_ms * 1_000_000) begin
+                $display("  FAIL: took longer than %0d ms", max_ms);
+                fail_count = fail_count + 1;
+            end
             wait (lines_seen == before + 2);
             if (!match_prefix(last_line, exp_prefix)) begin
                 $display("  FAIL: expected line to start with \"%0s\"", exp_prefix);
@@ -146,9 +150,13 @@ module tb_othello_fpga;
 
         // 期待値は同じソースを PC 上でビルドした結果 (OTHELLO_HOST_TEST) と一致させてある。
         // 初期局面 (黒番)、深さ3
-        check_bestmove("BESTMOVE 0000000810000000 0000001008000000 b 3 99999 10", "MOVE d3 3.70 3 50");
+        check_bestmove("BESTMOVE 0000000810000000 0000001008000000 b 3 99999 10", "MOVE d3 3.70 3 53", 99999);
         // 中盤局面 (黒番)、深さ4。PC版 engine_cli も c4 / 33.26
-        check_bestmove("BESTMOVE 10201e0408480000 085260583014281c b 4 99999 10", "MOVE c4 33.26 4");
+        check_bestmove("BESTMOVE 10201e0408480000 085260583014281c b 4 99999 10", "MOVE c4 33.26 4 1091", 99999);
+        // 持ち時間 250ms 指定 (大会規定 0.309s 用の設定)。時間内に応答すること
+        check_bestmove("BESTMOVE 0080402808080000 0040b81010100000 b 60 250 14", "MOVE ", 255);
+        // 残り8マスの終盤。250ms 以内に完全読みして正確な石差 (PC版と同じ +14) を返すこと
+        check_bestmove("BESTMOVE 84c898a60ba5c2e0 70306659f45a2d1f b 60 250 14", "MOVE e2 14.00 8", 255);
 
         if (fail_count == 0) $display("\nALL TESTS PASSED!");
         else                 $display("\nSOME TESTS FAILED! (%0d)", fail_count);
@@ -156,7 +164,7 @@ module tb_othello_fpga;
     end
 
     initial begin
-        #2_000_000_000;
+        #3_000_000_000;
         $display("TIMEOUT");
         $finish;
     end

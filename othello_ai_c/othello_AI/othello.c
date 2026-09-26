@@ -13,8 +13,6 @@ const Bitboard INIT_WHITE = (1ULL << 27) | (1ULL << 36);
 #define NOT_A  (~FILE_A)
 #define NOT_H  (~FILE_H)
 
-static const int DIRS[8] = {8, -8, 1, -1, 9, 7, -7, -9};
-
 Bitboard shift_dir(Bitboard bb, int d) {
     /* 列方向にまたがる手（東方向成分を含む: +1,+9,-7）はH列がラップしないよう
        あらかじめH列を落としておく。西方向成分(-1,+7,-9)はA列を落とす。 */
@@ -30,36 +28,72 @@ Bitboard shift_dir(Bitboard bb, int d) {
     }
 }
 
+/*
+ * 合法手生成・反転計算は方向ごとにシフト量を定数にした inline 関数で行う。
+ * （RV32 では64bitの可変量シフトが分岐入りの長い命令列になるため、定数シフトに
+ *   展開させると数倍速い。PC版でも速くなる）
+ * 横・斜め方向は相手石を B〜G 列だけに絞った mO を使うことで、盤端をまたいだ
+ * ラップアラウンドを防ぐ（A/H列の相手石は挟めないので結果は変わらない）。
+ */
+#define INNER_COLS 0x7E7E7E7E7E7E7E7EULL
+
+/* 方向 +s (左シフト) の合法手。Kogge-Stone 風に倍々で伸ばす（最大6連続） */
+static inline Bitboard moves_l(Bitboard P, Bitboard mO, Bitboard empty, int s) {
+    Bitboard t = mO & (P << s);
+    t |= mO & (t << s);
+    Bitboard m = mO & (mO << s);
+    t |= m & (t << (2 * s));
+    t |= m & (t << (2 * s));
+    return (t << s) & empty;
+}
+
+static inline Bitboard moves_r(Bitboard P, Bitboard mO, Bitboard empty, int s) {
+    Bitboard t = mO & (P >> s);
+    t |= mO & (t >> s);
+    Bitboard m = mO & (mO >> s);
+    t |= m & (t >> (2 * s));
+    t |= m & (t >> (2 * s));
+    return (t >> s) & empty;
+}
+
 Bitboard get_moves(Bitboard P, Bitboard O) {
     Bitboard empty = ~(P | O);
-    Bitboard moves = 0;
-    for (int i = 0; i < 8; i++) {
-        int d = DIRS[i];
-        Bitboard x = shift_dir(P, d) & O;
-        for (int k = 0; k < 5; k++) {
-            x |= shift_dir(x, d) & O;
-        }
-        moves |= shift_dir(x, d) & empty;
-    }
-    return moves;
+    Bitboard mO = O & INNER_COLS;
+    return moves_l(P, O, empty, 8)  | moves_r(P, O, empty, 8)    /* 北・南 */
+         | moves_l(P, mO, empty, 1) | moves_r(P, mO, empty, 1)   /* 東・西 */
+         | moves_l(P, mO, empty, 9) | moves_r(P, mO, empty, 9)   /* 北東・南西 */
+         | moves_l(P, mO, empty, 7) | moves_r(P, mO, empty, 7);  /* 北西・南東 */
+}
+
+/* 着手 mb から方向 +s / -s に挟める石。隣が相手石でない方向（大半）はすぐ抜ける */
+static inline Bitboard flips_l(Bitboard P, Bitboard mO, Bitboard mb, int s) {
+    Bitboard f = mO & (mb << s);
+    if (!f) return 0;
+    Bitboard n = f << s;
+    while (n & mO) { f |= n; n <<= s; }
+    return (n & P) ? f : 0;
+}
+
+static inline Bitboard flips_r(Bitboard P, Bitboard mO, Bitboard mb, int s) {
+    Bitboard f = mO & (mb >> s);
+    if (!f) return 0;
+    Bitboard n = f >> s;
+    while (n & mO) { f |= n; n >>= s; }
+    return (n & P) ? f : 0;
+}
+
+Bitboard compute_flips(Bitboard P, Bitboard O, int sq) {
+    Bitboard mb = 1ULL << sq;
+    Bitboard mO = O & INNER_COLS;
+    return flips_l(P, O, mb, 8)  | flips_r(P, O, mb, 8)
+         | flips_l(P, mO, mb, 1) | flips_r(P, mO, mb, 1)
+         | flips_l(P, mO, mb, 9) | flips_r(P, mO, mb, 9)
+         | flips_l(P, mO, mb, 7) | flips_r(P, mO, mb, 7);
 }
 
 void apply_move(Bitboard P, Bitboard O, int sq, Bitboard *newP, Bitboard *newO) {
-    Bitboard mb = 1ULL << sq;
-    Bitboard flips = 0;
-    for (int i = 0; i < 8; i++) {
-        int d = DIRS[i];
-        Bitboard cur = shift_dir(mb, d);
-        Bitboard ray = 0;
-        while (cur & O) {
-            ray |= cur;
-            cur = shift_dir(cur, d);
-        }
-        if (cur & P) {
-            flips |= ray;
-        }
-    }
-    *newP = P | mb | flips;
+    Bitboard flips = compute_flips(P, O, sq);
+    *newP = P | (1ULL << sq) | flips;
     *newO = O & ~flips;
 }
 

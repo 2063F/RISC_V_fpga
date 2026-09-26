@@ -15,8 +15,7 @@ typedef struct {
 /*
  * 中盤〜序盤探索: 反復深化 + negamax + αβ枝刈り + 置換表。
  * time_limit_ms ミリ秒以内で探索を打ち切り、その時点で分かっている最善手を返す。
- * （ベアメタル版はタイマーが無いため、OTHELLO_NODES_PER_MS から換算した
- *   ノード数で打ち切る。時間はおおよその目安になる）
+ * （FPGA版は CPU のサイクルカウンタで時間を測る）
  * max_depth は深さの上限（安全弁。時間切れが起きなければここまで読む）。
  * 残り空きマス数が endgame_threshold 以下になったら自動的に終盤完全読みに切り替える。
  */
@@ -25,7 +24,8 @@ SearchResult find_best_move(Bitboard black, Bitboard white, int player_is_black,
 
 /*
  * 終盤完全読み: 評価関数を使わず、ゲーム終了までの石差を正確に読み切って最善手を返す。
- * empty_count が大きすぎる(概ね14〜16マス超)と非常に時間がかかるので注意。
+ * まず持ち時間の1/6で通常の探索をして手を確保し、残り時間で完全読みを試みる。
+ * 時間内に読み切れなかった場合は通常探索の手を返す（持ち時間は必ず守る）。
  */
 SearchResult endgame_search(Bitboard black, Bitboard white, int player_is_black, long time_limit_ms);
 

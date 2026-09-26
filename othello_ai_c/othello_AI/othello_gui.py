@@ -41,9 +41,10 @@ AI_MAX_DEPTH = 30
 AI_TIME_MS = 1200
 ENDGAME_THRESHOLD = 16
 
-# FPGA 版は PC より桁違いに遅いので、思考時間を長めに・完全読みを浅めにする
-FPGA_TIME_MS = 3000
-FPGA_ENDGAME_THRESHOLD = 8
+# FPGA 版の設定。1手 0.309 秒の大会規定に、UART の送受信 (約7ms) と
+# PC 側の遅延の余裕を持たせた思考時間にしている
+FPGA_TIME_MS = 250
+FPGA_ENDGAME_THRESHOLD = 14
 
 
 def engine_binary_path():
@@ -122,7 +123,7 @@ class SerialEngine:
         )
         self.ser.reset_input_buffer()
         self.ser.write(cmd.encode("ascii"))
-        # 時間はノード数で近似しているため多少ぶれる。十分な余裕を持って待つ
+        # ボードはサイクルカウンタで time_ms を守るが、念のため余裕を持って待つ
         deadline_s = time_ms / 1000.0 * 3 + 10
         waited = 0.0
         while True:

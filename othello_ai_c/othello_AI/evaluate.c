@@ -14,77 +14,95 @@ static int popcount_masked(Bitboard bb, Bitboard mask) {
     return popcount(bb & mask);
 }
 
-static int frontier_count(Bitboard own, Bitboard empty) {
-    static const int DIRS[8] = {8, -8, 1, -1, 9, 7, -7, -9};
-    Bitboard nb = 0;
-    for (int i = 0; i < 8; i++) {
-        nb |= shift_dir(empty, DIRS[i]);
-    }
-    return popcount(own & nb);
+/* 空きマスに隣接するマス（8方向）。frontier 計算用に1回だけ求めて両者で共有する */
+static Bitboard empty_neighbors(Bitboard empty) {
+    Bitboard e_noA = empty & ~0x0101010101010101ULL; /* 西へずらすとき A列は落とす */
+    Bitboard e_noH = empty & ~0x8080808080808080ULL; /* 東へずらすとき H列は落とす */
+    return (empty << 8) | (empty >> 8)
+         | (e_noH << 1) | (e_noH << 9) | (e_noH >> 7)
+         | (e_noA >> 1) | (e_noA << 7) | (e_noA >> 9);
 }
 
-/* 簡易確定石数：4辺それぞれについて、両端(隅側)から内側に向かって
-   同色が連続する区間を確定石とみなす近似計算。
-   (Pythonのstable_count_simpleと完全に同じロジック) */
-static int stable_count_simple(Bitboard black, Bitboard white, int player_is_black) {
-    Bitboard own = player_is_black ? black : white;
-    Bitboard stable = 0;
-    int lines[4][8];
-    for (int c = 0; c < 8; c++) lines[0][c] = c;            /* 1行目 a1..h1 */
-    for (int c = 0; c < 8; c++) lines[1][c] = 56 + c;       /* 8行目 a8..h8 */
-    for (int r = 0; r < 8; r++) lines[2][r] = r * 8;        /* a列  a1..a8 */
-    for (int r = 0; r < 8; r++) lines[3][r] = r * 8 + 7;    /* h列  h1..h8 */
+/*
+ * 簡易確定石：4辺それぞれについて、両端(隅側)から内側に向かって
+ * 同色が連続する区間を確定石とみなす近似計算。
+ * (Pythonのstable_count_simpleと完全に同じロジック)
+ * 自分と相手の分を1回の走査でまとめて求め、差を返す。
+ */
 
-    for (int li = 0; li < 4; li++) {
-        for (int dir = 0; dir < 2; dir++) {
-            int seq[8];
-            for (int k = 0; k < 8; k++) {
-                seq[k] = (dir == 0) ? lines[li][k] : lines[li][7 - k];
-            }
-            int color = 0; /* 0=未定, 1=黒, -1=白 */
-            for (int k = 0; k < 8; k++) {
-                int idx = seq[k];
-                Bitboard bit = 1ULL << idx;
-                int c;
-                if (black & bit) c = 1;
-                else if (white & bit) c = -1;
-                else break;
-                if (color == 0) color = c;
-                if (c != color) break;
-                stable |= bit;
-            }
-        }
-    }
-    return popcount(stable & own);
+/* 辺1本分(8bit, bit0 が一方の隅)の黒 b・白 w から、両端から続く同色区間を返す */
+static inline uint32_t edge_runs(uint32_t b, uint32_t w) {
+    /* bit0 側: 隅の色の石が連続する区間 = x の下位から連続する1 */
+    uint32_t x = (b & 1) ? b : ((w & 1) ? w : 0);
+    uint32_t lo = x & ~(x + 1);
+    /* bit7 側: y の上位から連続する1 */
+    uint32_t y = (b & 0x80) ? b : ((w & 0x80) ? w : 0);
+    uint32_t ny = ~y & 0xFF;
+    ny |= ny >> 1; ny |= ny >> 2; ny |= ny >> 4;
+    uint32_t hi = ~ny & 0xFF;
+    return lo | hi;
 }
 
-Features extract_features(Bitboard black, Bitboard white, int player_is_black) {
+/* A列 / H列の8マスを8bitに集める（bit i = i行目）。RV32 で速いよう32bitずつ定数シフト */
+static inline uint32_t file_a(Bitboard bb) {
+    uint32_t lo = (uint32_t)bb, hi = (uint32_t)(bb >> 32);
+    return (lo & 1) | ((lo >> 7) & 2) | ((lo >> 14) & 4) | ((lo >> 21) & 8)
+         | ((hi << 4) & 16) | ((hi >> 3) & 32) | ((hi >> 10) & 64) | ((hi >> 17) & 128);
+}
+
+static inline uint32_t file_h(Bitboard bb) {
+    uint32_t lo = (uint32_t)bb, hi = (uint32_t)(bb >> 32);
+    return ((lo >> 7) & 1) | ((lo >> 14) & 2) | ((lo >> 21) & 4) | ((lo >> 28) & 8)
+         | ((hi >> 3) & 16) | ((hi >> 10) & 32) | ((hi >> 17) & 64) | ((hi >> 24) & 128);
+}
+
+/* 8bit の popcount */
+static inline int popcount8(uint32_t x) {
+    x = x - ((x >> 1) & 0x55);
+    x = (x & 0x33) + ((x >> 2) & 0x33);
+    return (int)((x + (x >> 4)) & 0x0F);
+}
+
+/* 辺1本の確定石の (自分 - 相手)。inner_mask で数えるマスを絞る */
+static inline int edge_stable_diff(uint32_t p, uint32_t o, uint32_t inner_mask) {
+    uint32_t st = edge_runs(p, o) & inner_mask;
+    return popcount8(st & p) - popcount8(st & o);
+}
+
+/* 確定石数の差（自分 - 相手）。確定石集合は4辺の区間の和集合で、
+   隅は行と列の両方に含まれるので列側では数えない（隅は石があれば必ず区間に入る） */
+static int stable_diff_simple(Bitboard P, Bitboard O) {
+    return edge_stable_diff((uint32_t)P & 0xFF, (uint32_t)O & 0xFF, 0xFF)
+         + edge_stable_diff((uint32_t)(P >> 56), (uint32_t)(O >> 56), 0xFF)
+         + edge_stable_diff(file_a(P), file_a(O), 0x7E)
+         + edge_stable_diff(file_h(P), file_h(O), 0x7E);
+}
+
+/* 手番側 P / 相手側 O から見た特徴量。pm/om は P/O それぞれの合法手 */
+static inline Features features_po(Bitboard P, Bitboard O, Bitboard pm, Bitboard om) {
     Features f;
-    Bitboard P = player_is_black ? black : white;
-    Bitboard O = player_is_black ? white : black;
-    Bitboard empty = ~(black | white);
+    Bitboard empty = ~(P | O);
 
-    int b = popcount(black), w = popcount(white);
-    int own = player_is_black ? b : w;
-    int opp = player_is_black ? w : b;
-    f.stone_diff = own - opp;
-
-    int my_moves = popcount(get_moves(P, O));
-    int op_moves = popcount(get_moves(O, P));
-    f.mobility_diff = my_moves - op_moves;
+    f.stone_diff = popcount(P) - popcount(O);
+    f.mobility_diff = popcount(pm) - popcount(om);
 
     f.corner_diff = popcount_masked(P, CORNER_MASK) - popcount_masked(O, CORNER_MASK);
     f.x_square_diff = popcount_masked(P, X_MASK) - popcount_masked(O, X_MASK);
     f.c_square_diff = popcount_masked(P, C_MASK) - popcount_masked(O, C_MASK);
     f.edge_diff = popcount_masked(P, EDGE_MASK) - popcount_masked(O, EDGE_MASK);
 
-    f.frontier_diff = frontier_count(P, empty) - frontier_count(O, empty);
+    Bitboard nb = empty_neighbors(empty);
+    f.frontier_diff = popcount(P & nb) - popcount(O & nb);
 
-    int stable_own = stable_count_simple(black, white, player_is_black);
-    int stable_opp = stable_count_simple(black, white, !player_is_black);
-    f.stable_diff = stable_own - stable_opp;
+    f.stable_diff = stable_diff_simple(P, O);
 
     return f;
+}
+
+Features extract_features(Bitboard black, Bitboard white, int player_is_black) {
+    Bitboard P = player_is_black ? black : white;
+    Bitboard O = player_is_black ? white : black;
+    return features_po(P, O, get_moves(P, O), get_moves(O, P));
 }
 
 #ifdef OTHELLO_BAREMETAL
@@ -124,13 +142,13 @@ static void init_fixed_weights(void) {
 }
 #endif
 
-Score evaluate_position(Bitboard black, Bitboard white, int player_is_black) {
-    int empty_count = 64 - popcount(black) - popcount(white);
+Score evaluate_po(Bitboard P, Bitboard O, Bitboard pm, Bitboard om) {
+    int empty_count = 64 - popcount(P) - popcount(O);
     int phase = empty_count;
     if (phase < 0) phase = 0;
     if (phase >= EVAL_N_PHASE) phase = EVAL_N_PHASE - 1;
 
-    Features f = extract_features(black, white, player_is_black);
+    Features f = features_po(P, O, pm, om);
 #ifdef OTHELLO_BAREMETAL
     if (!w_fix_ready) init_fixed_weights();
     const int32_t *w = W_FIX[phase];
@@ -148,4 +166,10 @@ Score evaluate_position(Bitboard black, Bitboard white, int player_is_black) {
     v += w[7] * f.stable_diff;
     v += w[8] * f.edge_diff;
     return v;
+}
+
+Score evaluate_position(Bitboard black, Bitboard white, int player_is_black) {
+    Bitboard P = player_is_black ? black : white;
+    Bitboard O = player_is_black ? white : black;
+    return evaluate_po(P, O, get_moves(P, O), get_moves(O, P));
 }

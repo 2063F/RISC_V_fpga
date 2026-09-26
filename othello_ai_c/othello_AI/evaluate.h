@@ -40,4 +40,8 @@ Features extract_features(Bitboard black, Bitboard white, int player_is_black);
    値が大きいほど手番側に有利。empty_countが範囲外の場合は端の値で代用する。 */
 Score evaluate_position(Bitboard black, Bitboard white, int player_is_black);
 
+/* evaluate_position の手番側視点版。P=手番側, O=相手, pm/om=それぞれの合法手
+   （探索側で合法手を既に求めている場合に再計算を省くため） */
+Score evaluate_po(Bitboard P, Bitboard O, Bitboard pm, Bitboard om);
+
 #endif

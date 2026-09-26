@@ -201,12 +201,15 @@ module cpu_top #(
     //       0x8000_0014 = UART TX status register (bit0 = busy)
     //       0x8000_0018 = UART RX data register
     //       0x8000_001C = UART RX status register (bit0 = ready)
+    //       0x8000_0020 = cycle counter (read-only, free-running, wraps)
     wire mmio_uart_tx_sel      = (alu_result == 32'h8000_0010);
     wire mmio_uart_stat_sel    = (alu_result == 32'h8000_0014);
     wire mmio_uart_rx_sel      = (alu_result == 32'h8000_0018);
     wire mmio_uart_rx_stat_sel = (alu_result == 32'h8000_001C);
+    wire mmio_cycle_sel        = (alu_result == 32'h8000_0020);
     wire mmio_sel              = mmio_uart_tx_sel || mmio_uart_stat_sel ||
-                                 mmio_uart_rx_sel || mmio_uart_rx_stat_sel;
+                                 mmio_uart_rx_sel || mmio_uart_rx_stat_sel ||
+                                 mmio_cycle_sel;
 
     wire ex_store = ex_valid && ex_mem_write;
     wire ex_load  = ex_valid && ex_mem_read;
@@ -248,6 +251,17 @@ module cpu_top #(
         .rx_data  (uart_rx_data),
         .rx_ready (uart_rx_ready)
     );
+
+    // =========================================================================
+    // Cycle counter MMIO
+    // =========================================================================
+    // Free-running clock counter so software can measure wall-clock time
+    // (50 MHz -> wraps every ~86 s; software only uses differences).
+    reg [31:0] cycle_counter;
+    always @(posedge clk) begin
+        if (!rst_n) cycle_counter <= 32'd0;
+        else        cycle_counter <= cycle_counter + 32'd1;
+    end
 
     // =========================================================================
     // Module Instantiations
@@ -431,6 +445,8 @@ module cpu_top #(
             selected_mem_data = {24'd0, uart_rx_data};
         end else if (mmio_uart_rx_stat_sel) begin
             selected_mem_data = {31'd0, uart_rx_ready};
+        end else if (mmio_cycle_sel) begin
+            selected_mem_data = cycle_counter;
         end else begin
             selected_mem_data = mem_read_data;
         end

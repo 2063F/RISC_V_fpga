@@ -25,7 +25,10 @@ RISCV_PREFIX ?= riscv64-unknown-elf-
 REPO_ROOT = ../..
 FPGA_SRCS = othello_fpga.c othello.c evaluate.c search.c
 FPGA_HDRS = othello.h evaluate.h search.h eval_weights.h $(REPO_ROOT)/examples/uart.h
-FPGA_CFLAGS = -march=rv32im -mabi=ilp32 -O2 -Wall -Wextra -std=c11 \
+# -fno-schedule-insns*: 命令スケジューリングは本CPU(インオーダー3段)では効果が無く、
+# レジスタ退避が増えて逆に約25%遅くなるので切る
+FPGA_CFLAGS = -march=rv32im -mabi=ilp32 -O2 -fno-schedule-insns -fno-schedule-insns2 \
+              -Wall -Wextra -std=c11 \
               -ffreestanding -nostdlib -nostartfiles -DOTHELLO_BAREMETAL \
               -I $(REPO_ROOT)/examples -T $(REPO_ROOT)/tools/link.ld
 

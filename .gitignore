@@ -11,3 +11,6 @@ sim/*.out
 
 # ROM image staged next to the Gowin project by build.tcl
 gowin_project/*/examples/
+
+# Verilator build outputs
+sim/verilator/obj/

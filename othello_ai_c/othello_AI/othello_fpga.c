@@ -15,8 +15,9 @@
  *
  * 対局中は "f5" のように着手を入力する。"q" で対局を中断してメニューへ戻る。
  *
- * CPU にはタイマーが無いため、思考時間はノード数で近似している
- * (OTHELLO_NODES_PER_MS, search.c 参照)。
+ * 思考時間は CPU のサイクルカウンタ (MMIO 0x8000_0020) で測り、time_ms で打ち切る。
+ * 打ち切りから応答1文字目までの遅れは約3ms。コマンド受信(約5ms)・応答送信(約2ms)の
+ * 時間は含まないので、大会の持ち時間に対しては余裕を持った time_ms を渡すこと。
  *
  * ビルド方法は ../README_FPGA.md を参照。
  * OTHELLO_HOST_TEST を定義すると PC 上で標準入出力を UART 代わりにして動く（動作確認用）。
@@ -40,9 +41,9 @@ static char uart_getchar(void) {
 #endif
 
 /* 対局モードの AI 設定。50MHz の RV32IM で 1 手数秒程度になるよう調整した値 */
-#define AI_MAX_DEPTH      30   /* 実際の深さは時間(ノード数)で決まる */
-#define AI_TIME_MS        3000
-#define ENDGAME_THRESHOLD 8    /* 残り8マス以下で完全読み (約2千ノード = 2秒前後) */
+#define AI_MAX_DEPTH      60   /* 実際の深さは時間で決まる */
+#define AI_TIME_MS        250  /* 1手 0.309 秒の大会規定に通信分の余裕を持たせた値 */
+#define ENDGAME_THRESHOLD 14   /* 残り14マス以下で完全読みを試みる（時間内に読み切れなければ通常探索の手） */
 
 #define LINE_MAX 128
 
