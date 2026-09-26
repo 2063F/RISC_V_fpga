@@ -1,12 +1,19 @@
-#include <stdio.h>
+#ifndef OTHELLO_BAREMETAL
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
+#endif
 #include "othello.h"
 #include "evaluate.h"
 #include "search.h"
 
+/* 置換表のサイズ(2^TT_BITS エントリ)。ベアメタル版は RAM 64KB に収まるよう小さくする */
+#ifndef TT_BITS
+#ifdef OTHELLO_BAREMETAL
+#define TT_BITS 10
+#else
 #define TT_BITS 20
+#endif
+#endif
 #define TT_SIZE (1u << TT_BITS)
 #define TT_MASK (TT_SIZE - 1)
 
@@ -18,10 +25,15 @@ typedef struct {
     int8_t flag;
     int8_t best_move;
     int8_t used;
-    double value;
+    Score value;
 } TTEntry;
 
+#ifdef OTHELLO_BAREMETAL
+static TTEntry tt_storage[TT_SIZE]; /* malloc が無いので静的確保(.bss でゼロ初期化) */
+static TTEntry *tt = tt_storage;
+#else
 static TTEntry *tt = NULL;
+#endif
 static uint64_t ZOBRIST[2][64];
 static uint64_t ZOBRIST_SIDE;
 static int g_init_done = 0;
@@ -38,7 +50,36 @@ static void store_killer(int depth, int move) {
     killer[depth][0] = move;
 }
 
+/* 探索で使う定数。PC版(double)は従来と同じ値、ベアメタル版(int32固定小数点)は
+   オーバーフローしない範囲の値にする */
+#ifdef OTHELLO_BAREMETAL
+#define SCORE_INF ((Score)0x3FFFFFFF)
+#define SCORE_EPS ((Score)1)
+#else
+#define SCORE_INF 1e18
+#define SCORE_EPS 1e-6
+#endif
+/* 手の並べ替え用ボーナス（石数換算。評価値の範囲より十分大きければよい） */
+#define ORDER_BONUS_TT     ((Score)1000000 * SCORE_SCALE)
+#define ORDER_BONUS_KILLER1 ((Score)500000 * SCORE_SCALE)
+#define ORDER_BONUS_KILLER2 ((Score)400000 * SCORE_SCALE)
+
+/*
+ * 時間管理。ベアメタル版の CPU にはタイマーが無いので、探索ノード数を
+ * OTHELLO_NODES_PER_MS (1ms あたりに探索できるノード数の実測値) で割って
+ * 経過時間とみなす。
+ */
+#ifdef OTHELLO_BAREMETAL
+#ifndef OTHELLO_NODES_PER_MS
+/* 50MHz の本CPU で実測すると 1 ノードあたり約 2〜5 万サイクル
+   (sim/tb_othello_fpga.v)。ざっくり 1ms に 1 ノード */
+#define OTHELLO_NODES_PER_MS 1
+#endif
+#define TIME_CHECK_MASK 15
+#else
+#define TIME_CHECK_MASK 1023
 static clock_t g_start;
+#endif
 static long g_time_limit_ms;
 static int g_time_up;
 static long g_nodes;
@@ -59,7 +100,9 @@ static void init_engine(void) {
         for (int s = 0; s < 64; s++)
             ZOBRIST[c][s] = xorshift64();
     ZOBRIST_SIDE = xorshift64();
+#ifndef OTHELLO_BAREMETAL
     tt = (TTEntry *)calloc(TT_SIZE, sizeof(TTEntry));
+#endif
     for (int d = 0; d < MAX_KILLER_DEPTH; d++) { killer[d][0] = -1; killer[d][1] = -1; }
     g_init_done = 1;
 }
@@ -75,7 +118,11 @@ static uint64_t compute_hash(Bitboard black, Bitboard white, int player_is_black
 }
 
 static void time_check(void) {
+#ifdef OTHELLO_BAREMETAL
+    long elapsed_ms = g_nodes / OTHELLO_NODES_PER_MS;
+#else
     long elapsed_ms = (long)((clock() - g_start) * 1000L / CLOCKS_PER_SEC);
+#endif
     if (elapsed_ms >= g_time_limit_ms) g_time_up = 1;
 }
 
@@ -86,11 +133,11 @@ static void time_check(void) {
  *   depth==0 に到達 -> evaluate_position()（学習済み線形回帰）
  *   両者とも合法手なし -> その時点の確定石差（正確な値）
  */
-static double negamax(Bitboard black, Bitboard white, int player_is_black,
-                       int depth, double alpha, double beta, int *out_move) {
+static Score negamax(Bitboard black, Bitboard white, int player_is_black,
+                      int depth, Score alpha, Score beta, int *out_move) {
     g_nodes++;
-    if ((g_nodes & 1023) == 0) time_check();
-    if (g_time_up) { if (out_move) *out_move = -1; return 0.0; }
+    if ((g_nodes & TIME_CHECK_MASK) == 0) time_check();
+    if (g_time_up) { if (out_move) *out_move = -1; return 0; }
 
     Bitboard P = player_is_black ? black : white;
     Bitboard O = player_is_black ? white : black;
@@ -103,10 +150,10 @@ static double negamax(Bitboard black, Bitboard white, int player_is_black,
             int own = player_is_black ? b : w;
             int opp = player_is_black ? w : b;
             if (out_move) *out_move = -1;
-            return (double)(own - opp);
+            return (Score)(own - opp) * SCORE_SCALE;
         }
         int child_move;
-        double v = -negamax(black, white, !player_is_black, depth, -beta, -alpha, &child_move);
+        Score v = -negamax(black, white, !player_is_black, depth, -beta, -alpha, &child_move);
         if (out_move) *out_move = -1;
         return v;
     }
@@ -119,7 +166,7 @@ static double negamax(Bitboard black, Bitboard white, int player_is_black,
     uint64_t hash = compute_hash(black, white, player_is_black);
     TTEntry *e = &tt[hash & TT_MASK];
     int tt_move = -1;
-    double orig_alpha = alpha;
+    Score orig_alpha = alpha;
     if (e->used && e->hash == hash) {
         tt_move = e->best_move;
         if (e->depth >= depth) {
@@ -131,7 +178,7 @@ static double negamax(Bitboard black, Bitboard white, int player_is_black,
     }
 
     int sqs[64];
-    double order_score[64];
+    Score order_score[64];
     int n = 0;
     Bitboard m = moves;
     while (m) {
@@ -142,10 +189,10 @@ static double negamax(Bitboard black, Bitboard white, int player_is_black,
         apply_move(P, O, sq, &nb, &nw);
         Bitboard newblack = player_is_black ? nb : nw;
         Bitboard newwhite = player_is_black ? nw : nb;
-        double sc = -evaluate_position(newblack, newwhite, !player_is_black);
-        if (sq == tt_move) sc += 1e6;               /* 置換表の手を最優先 */
-        else if (sq == killer[depth][0]) sc += 5e5;  /* キラームーブ1番手 */
-        else if (sq == killer[depth][1]) sc += 4e5;  /* キラームーブ2番手 */
+        Score sc = -evaluate_position(newblack, newwhite, !player_is_black);
+        if (sq == tt_move) sc += ORDER_BONUS_TT;                 /* 置換表の手を最優先 */
+        else if (sq == killer[depth][0]) sc += ORDER_BONUS_KILLER1; /* キラームーブ1番手 */
+        else if (sq == killer[depth][1]) sc += ORDER_BONUS_KILLER2; /* キラームーブ2番手 */
         order_score[n] = sc;
         n++;
     }
@@ -155,13 +202,13 @@ static double negamax(Bitboard black, Bitboard white, int player_is_black,
         for (int j = i + 1; j < n; j++) if (order_score[j] > order_score[best]) best = j;
         if (best != i) {
             int ts = sqs[i]; sqs[i] = sqs[best]; sqs[best] = ts;
-            double td = order_score[i]; order_score[i] = order_score[best]; order_score[best] = td;
+            Score td = order_score[i]; order_score[i] = order_score[best]; order_score[best] = td;
         }
     }
 
-    double best_val = -1e18;
+    Score best_val = -SCORE_INF;
     int best_move = sqs[0];
-    const double EPS = 1e-6; /* PVSのnull window幅（doubleなので0ではなく極小値を使う） */
+    const Score EPS = SCORE_EPS; /* PVSのnull window幅（double版は0ではなく極小値、固定小数点版は1） */
 
     for (int i = 0; i < n; i++) {
         Bitboard nb, nw;
@@ -169,7 +216,7 @@ static double negamax(Bitboard black, Bitboard white, int player_is_black,
         Bitboard newblack = player_is_black ? nb : nw;
         Bitboard newwhite = player_is_black ? nw : nb;
         int child_move;
-        double v;
+        Score v;
 
         if (i == 0) {
             /* 最初の手（最も期待できる手）はフルウィンドウで探索 */
@@ -183,7 +230,7 @@ static double negamax(Bitboard black, Bitboard white, int player_is_black,
             }
         }
 
-        if (g_time_up) { if (out_move) *out_move = best_move; return best_val > -1e17 ? best_val : 0.0; }
+        if (g_time_up) { if (out_move) *out_move = best_move; return best_val > -SCORE_INF ? best_val : 0; }
         if (v > best_val) { best_val = v; best_move = sqs[i]; }
         if (v > alpha) alpha = v;
         if (alpha >= beta) {
@@ -205,7 +252,9 @@ static double negamax(Bitboard black, Bitboard white, int player_is_black,
 
 static SearchResult iterative_deepening(Bitboard black, Bitboard white, int player_is_black,
                                           int target_depth, long time_limit_ms) {
+#ifndef OTHELLO_BAREMETAL
     g_start = clock();
+#endif
     g_time_limit_ms = time_limit_ms;
     g_time_up = 0;
     g_nodes = 0;
@@ -213,13 +262,13 @@ static SearchResult iterative_deepening(Bitboard black, Bitboard white, int play
 
     SearchResult result;
     result.square = -1;
-    result.score = 0.0;
+    result.score = 0;
     result.nodes = 0;
     result.depth_reached = 0;
 
     for (int d = 1; d <= target_depth; d++) {
         int move = -1;
-        double val = negamax(black, white, player_is_black, d, -1e18, 1e18, &move);
+        Score val = negamax(black, white, player_is_black, d, -SCORE_INF, SCORE_INF, &move);
         if (g_time_up && d > 1) break; /* 深さ1すら終わらないほど時間が無い場合は結果を採用 */
         result.square = move;
         result.score = val;

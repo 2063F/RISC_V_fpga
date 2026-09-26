@@ -2,10 +2,12 @@
 #define SEARCH_H
 
 #include "othello.h"
+#include "evaluate.h"
 
 typedef struct {
     int square;        /* 選んだ手のマス番号。-1 はパス（合法手が無い場合） */
-    double score;       /* 手番側から見た評価値（中盤=評価関数値、終盤=確定石差） */
+    Score score;        /* 手番側から見た評価値（中盤=評価関数値、終盤=確定石差）。
+                           ベアメタル版は SCORE_SCALE 倍の固定小数点 */
     long nodes;         /* 探索したノード数（デバッグ・速度確認用） */
     int depth_reached;  /* 反復深化で実際に完了した深さ */
 } SearchResult;
@@ -13,6 +15,8 @@ typedef struct {
 /*
  * 中盤〜序盤探索: 反復深化 + negamax + αβ枝刈り + 置換表。
  * time_limit_ms ミリ秒以内で探索を打ち切り、その時点で分かっている最善手を返す。
+ * （ベアメタル版はタイマーが無いため、OTHELLO_NODES_PER_MS から換算した
+ *   ノード数で打ち切る。時間はおおよその目安になる）
  * max_depth は深さの上限（安全弁。時間切れが起きなければここまで読む）。
  * 残り空きマス数が endgame_threshold 以下になったら自動的に終盤完全読みに切り替える。
  */

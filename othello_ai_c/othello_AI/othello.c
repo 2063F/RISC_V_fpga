@@ -1,5 +1,6 @@
+#ifndef OTHELLO_BAREMETAL
 #include <stdio.h>
-#include <ctype.h>
+#endif
 #include "othello.h"
 
 /* d4=index(row3,col3)=27(白) e4=index(row3,col4)=28(黒)
@@ -64,7 +65,8 @@ void apply_move(Bitboard P, Bitboard O, int sq, Bitboard *newP, Bitboard *newO) 
 
 int parse_square(const char *s) {
     if (!s || !s[0] || !s[1]) return -1;
-    char c0 = (char)tolower((unsigned char)s[0]);
+    char c0 = s[0];
+    if (c0 >= 'A' && c0 <= 'Z') c0 = (char)(c0 - 'A' + 'a'); /* ctype.h 無しで小文字化 */
     char c1 = s[1];
     if (c0 < 'a' || c0 > 'h') return -1;
     if (c1 < '1' || c1 > '8') return -1;
@@ -79,6 +81,7 @@ void square_to_str(int sq, char *out) {
     out[2] = '\0';
 }
 
+#ifndef OTHELLO_BAREMETAL
 void print_board(Bitboard black, Bitboard white) {
     for (int r = 7; r >= 0; r--) {
         printf("%d ", r + 1);
@@ -94,3 +97,4 @@ void print_board(Bitboard black, Bitboard white) {
     }
     printf("  a b c d e f g h\n");
 }
+#endif

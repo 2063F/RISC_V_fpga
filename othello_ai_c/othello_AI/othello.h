@@ -36,9 +36,23 @@ Bitboard get_moves(Bitboard P, Bitboard O);
  */
 void apply_move(Bitboard P, Bitboard O, int sq, Bitboard *newP, Bitboard *newO);
 
+#ifdef OTHELLO_BAREMETAL
+/* RV32 には popcount 命令が無く、libgcc の __popcountdi2 は表引きで遅いので
+   32bit ずつ SWAR で数える（乗算は RV32M の mul 1命令） */
+static inline int popcount32(uint32_t x) {
+    x = x - ((x >> 1) & 0x55555555u);
+    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+    x = (x + (x >> 4)) & 0x0F0F0F0Fu;
+    return (int)((x * 0x01010101u) >> 24);
+}
+static inline int popcount(Bitboard bb) {
+    return popcount32((uint32_t)bb) + popcount32((uint32_t)(bb >> 32));
+}
+#else
 static inline int popcount(Bitboard bb) {
     return __builtin_popcountll(bb);
 }
+#endif
 
 static inline int sq_of(int col, int row) { return row * 8 + col; }
 static inline int col_of(int sq) { return sq % 8; }
@@ -50,7 +64,9 @@ int parse_square(const char *s);
 /* マス番号 -> "f5" のような2文字表記（out は3バイト以上確保すること） */
 void square_to_str(int sq, char *out);
 
-/* デバッグ用に盤面をテキストで表示する */
+#ifndef OTHELLO_BAREMETAL
+/* デバッグ用に盤面をテキストで表示する（stdio が無いベアメタル版では除外） */
 void print_board(Bitboard black, Bitboard white);
+#endif
 
 #endif

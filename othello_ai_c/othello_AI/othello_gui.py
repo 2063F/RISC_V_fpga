@@ -16,7 +16,14 @@
        python othello_gui.py
      Windowsで tkinter が無いと言われたら、Python公式インストーラから
      入れ直す際に "tcl/tk and IDLE" にチェックを入れてください。
+
+FPGA (RISC-V CPU) 上のエンジンと対戦する場合:
+  othello_fpga.hex を書き込んだボードを USB で接続し、pyserial を入れてから
+       pip install pyserial
+       python othello_gui.py --serial COM3
+  のようにシリアルポートを指定します（詳細は ../README_FPGA.md）。
 """
+import argparse
 import os
 import subprocess
 import sys
@@ -33,6 +40,10 @@ DIRS = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 AI_MAX_DEPTH = 30
 AI_TIME_MS = 1200
 ENDGAME_THRESHOLD = 16
+
+# FPGA 版は PC より桁違いに遅いので、思考時間を長めに・完全読みを浅めにする
+FPGA_TIME_MS = 3000
+FPGA_ENDGAME_THRESHOLD = 8
 
 
 def engine_binary_path():
@@ -80,6 +91,63 @@ class Engine:
             pass
         try:
             self.proc.terminate()
+        except Exception:
+            pass
+
+
+class SerialEngine:
+    """FPGA (RISC-V CPU) 上の othello_fpga と UART 経由で対話する。
+
+    プロトコルは engine_cli と同じ BESTMOVE 形式。ボードは入力をエコーバックし、
+    プロンプト等も出すので、"MOVE" / "ERROR" で始まる行が来るまで読み飛ばす。
+    """
+
+    def __init__(self, port, baud=115200):
+        try:
+            import serial  # pyserial
+        except ImportError:
+            print("pyserial が必要です: pip install pyserial")
+            sys.exit(1)
+        self.ser = serial.Serial(port, baud, timeout=1)
+        # 起動メッセージなどの残りを捨てる
+        self.ser.write(b"\r")
+        self.ser.reset_input_buffer()
+
+    def best_move(self, black, white, player_is_black,
+                  max_depth=AI_MAX_DEPTH, time_ms=FPGA_TIME_MS,
+                  endgame_threshold=FPGA_ENDGAME_THRESHOLD):
+        cmd = "BESTMOVE {:016x} {:016x} {} {} {} {}\r".format(
+            black, white, "b" if player_is_black else "w",
+            max_depth, time_ms, endgame_threshold,
+        )
+        self.ser.reset_input_buffer()
+        self.ser.write(cmd.encode("ascii"))
+        # 時間はノード数で近似しているため多少ぶれる。十分な余裕を持って待つ
+        deadline_s = time_ms / 1000.0 * 3 + 10
+        waited = 0.0
+        while True:
+            raw = self.ser.readline()
+            if not raw:
+                waited += self.ser.timeout
+                if waited > deadline_s:
+                    raise RuntimeError("FPGAからの応答がタイムアウトしました")
+                continue
+            line = raw.decode("ascii", errors="replace").strip()
+            if line.startswith("ERROR"):
+                raise RuntimeError("FPGAからの応答が不正です: " + line)
+            if not line.startswith("MOVE"):
+                continue  # エコーバックやプロンプト
+            parts = line.split()
+            sq_str, score, depth, nodes = parts[1], parts[2], parts[3], parts[4]
+            if sq_str == "PASS":
+                return None, float(score), int(depth), int(nodes)
+            col = ord(sq_str[0]) - ord('a')
+            row = int(sq_str[1]) - 1
+            return (row, col), float(score), int(depth), int(nodes)
+
+    def close(self):
+        try:
+            self.ser.close()
         except Exception:
             pass
 
@@ -333,14 +401,22 @@ class OthelloGUI:
 
 
 def main():
-    path = engine_binary_path()
-    if not path:
-        print("engine_cli(.exe) が見つかりません。先にビルドしてください。")
-        print("  Windows: build.bat を実行")
-        print("  Mac/Linux: make")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="オセロAI 対戦GUI")
+    parser.add_argument("--serial", metavar="PORT",
+                        help="FPGA上のエンジンを使う (例: COM3, /dev/ttyUSB1)")
+    parser.add_argument("--baud", type=int, default=115200)
+    args = parser.parse_args()
 
-    engine = Engine(path)
+    if args.serial:
+        engine = SerialEngine(args.serial, args.baud)
+    else:
+        path = engine_binary_path()
+        if not path:
+            print("engine_cli(.exe) が見つかりません。先にビルドしてください。")
+            print("  Windows: build.bat を実行")
+            print("  Mac/Linux: make")
+            sys.exit(1)
+        engine = Engine(path)
     root = tk.Tk()
     app = OthelloGUI(root, engine)
 

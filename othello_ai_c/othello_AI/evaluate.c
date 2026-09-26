@@ -87,16 +87,58 @@ Features extract_features(Bitboard black, Bitboard white, int player_is_black) {
     return f;
 }
 
-double evaluate_position(Bitboard black, Bitboard white, int player_is_black) {
+#ifdef OTHELLO_BAREMETAL
+/* eval_weights.h の double の重みを SCORE_SCALE 倍した整数に変換した表。
+   eval_weights.h は学習スクリプトの自動生成物なのでそのまま使い、
+   初回呼び出し時に IEEE754 のビット列を直接読んで変換する
+   （ソフトウェア浮動小数点ライブラリを一切リンクせずに済む）。 */
+static int32_t W_FIX[EVAL_N_PHASE][EVAL_N_FEATURES + 1];
+static int w_fix_ready = 0;
+
+static int32_t double_to_fixed(const double *d) {
+    union { double d; uint64_t u; } cv;
+    cv.d = *d;
+    uint64_t u = cv.u;
+    int neg = (int)(u >> 63);
+    int exp = (int)((u >> 52) & 0x7FF);
+    if (exp == 0) return 0; /* 0 / 非正規化数 */
+    uint64_t mant = (u & 0x000FFFFFFFFFFFFFULL) | (1ULL << 52);
+    /* 値 = mant * 2^(exp-1075)。これに SCORE_SCALE(=2^SCORE_SCALE_BITS) を掛けて丸める */
+    int sh = exp - 1075 + SCORE_SCALE_BITS;
+    int64_t v;
+    if (sh >= 0) {
+        v = (int64_t)(mant << sh); /* 重みは高々数十なのでオーバーフローしない */
+    } else if (sh > -63) {
+        v = (int64_t)((mant + (1ULL << (-sh - 1))) >> (-sh)); /* 四捨五入 */
+    } else {
+        v = 0;
+    }
+    return (int32_t)(neg ? -v : v);
+}
+
+static void init_fixed_weights(void) {
+    for (int p = 0; p < EVAL_N_PHASE; p++)
+        for (int i = 0; i <= EVAL_N_FEATURES; i++)
+            W_FIX[p][i] = double_to_fixed(&EVAL_WEIGHTS[p][i]);
+    w_fix_ready = 1;
+}
+#endif
+
+Score evaluate_position(Bitboard black, Bitboard white, int player_is_black) {
     int empty_count = 64 - popcount(black) - popcount(white);
     int phase = empty_count;
     if (phase < 0) phase = 0;
     if (phase >= EVAL_N_PHASE) phase = EVAL_N_PHASE - 1;
 
     Features f = extract_features(black, white, player_is_black);
+#ifdef OTHELLO_BAREMETAL
+    if (!w_fix_ready) init_fixed_weights();
+    const int32_t *w = W_FIX[phase];
+    Score v = w[0];
+#else
     const double *w = EVAL_WEIGHTS[phase];
-
     double v = w[0];
+#endif
     v += w[1] * f.stone_diff;
     v += w[2] * f.mobility_diff;
     v += w[3] * f.corner_diff;

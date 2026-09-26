@@ -311,6 +311,12 @@ powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Interactive -Sh
   - `button_led` : `user_btn` (S2) を押すたびに `led[1]` が反転
   - `printf_demo` / `uart_echo_c` : 115200bps のシリアル端末に出力
 
+### 7. オセロAI
+
+`othello_ai_c/` の C 言語オセロAI を本CPU上で動かせます。UART 端末や
+`othello_gui.py --serial` で対戦できます。手順は
+[othello_ai_c/README_FPGA.md](othello_ai_c/README_FPGA.md) を参照してください。
+
 > `tools/program.ps1` はビットストリームより新しい `src/*.v` があると警告します。
 > 合成し直さずに古いビットストリームを焼く事故を防ぐためです。
 >

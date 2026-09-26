@@ -18,7 +18,33 @@ benchmark: benchmark.c othello.c evaluate.c search.c othello.h evaluate.h search
 engine_cli: engine_cli.c othello.c evaluate.c search.c othello.h evaluate.h search.h eval_weights.h
 	$(CC) $(CFLAGS) -o engine_cli engine_cli.c othello.c evaluate.c search.c
 
-clean:
-	rm -f test_replay dump_features play benchmark engine_cli *.o
+# ---- FPGA (RISC-V RV32IM ソフトCPU) 版 --------------------------------------
+# make fpga で othello_fpga.hex を生成する。接頭辞は導入したツールチェーンに合わせる
+# (例: make fpga RISCV_PREFIX=riscv-none-elf-)
+RISCV_PREFIX ?= riscv64-unknown-elf-
+REPO_ROOT = ../..
+FPGA_SRCS = othello_fpga.c othello.c evaluate.c search.c
+FPGA_HDRS = othello.h evaluate.h search.h eval_weights.h $(REPO_ROOT)/examples/uart.h
+FPGA_CFLAGS = -march=rv32im -mabi=ilp32 -O2 -Wall -Wextra -std=c11 \
+              -ffreestanding -nostdlib -nostartfiles -DOTHELLO_BAREMETAL \
+              -I $(REPO_ROOT)/examples -T $(REPO_ROOT)/tools/link.ld
 
-.PHONY: all clean
+fpga: othello_fpga.hex
+
+othello_fpga.elf: $(FPGA_SRCS) $(FPGA_HDRS) $(REPO_ROOT)/tools/crt0.S $(REPO_ROOT)/tools/link.ld
+	$(RISCV_PREFIX)gcc $(FPGA_CFLAGS) $(REPO_ROOT)/tools/crt0.S $(FPGA_SRCS) -lgcc -o $@
+	$(RISCV_PREFIX)size $@
+
+othello_fpga.hex: othello_fpga.elf
+	$(RISCV_PREFIX)objcopy -O binary $< othello_fpga.bin
+	python3 $(REPO_ROOT)/tools/bin2hex.py othello_fpga.bin $@
+
+# FPGA 版と同じソースを PC 上で動かす (標準入出力を UART 代わりに使う)
+othello_fpga_host: $(FPGA_SRCS) othello.h evaluate.h search.h eval_weights.h
+	$(CC) $(CFLAGS) -DOTHELLO_BAREMETAL -DOTHELLO_HOST_TEST -o $@ $(FPGA_SRCS)
+
+clean:
+	rm -f test_replay dump_features play benchmark engine_cli othello_fpga_host *.o
+	rm -f othello_fpga.elf othello_fpga.bin
+
+.PHONY: all clean fpga
