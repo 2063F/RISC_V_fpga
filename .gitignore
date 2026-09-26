@@ -14,3 +14,7 @@ gowin_project/*/examples/
 
 # Verilator build outputs
 sim/verilator/obj/
+
+# オセロAI FPGA 版のビルド中間生成物 (othello_fpga.hex だけをコミットする)
+othello_ai_c/othello_AI/othello_fpga.elf
+othello_ai_c/othello_AI/othello_fpga.bin
