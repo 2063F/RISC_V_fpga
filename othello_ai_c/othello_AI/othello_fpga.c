@@ -17,8 +17,10 @@
  *   0〜9, a〜z, A〜Z, ';', ':' の64文字を順に 1a, 2a, …, 8a, 1b, …, 7h, 8h
  * （数字=行、英字=列。行が先に進む）。'!' で対局を中断してメニューへ戻る。
  * メニューで "keys" と打つと対応表を表示する。
+ * FPGA に直結した 8x8 キーマトリクス (src/keypad_matrix.v, MMIO 0x8000_0028) の
+ * キー番号 (行*8+列) も同じ順番で 1a, 2a, ... に対応し、UART のキーと同じように使える。
  *
- * 思考時間は CPU のサイクルカウンタ (MMIO 0x8000_0020) で測り、time_ms で打ち切る。
+ * 思考時間は CPU のサイクルカウンタ (MMIO 0x8000_0030) で測り、time_ms で打ち切る。
  * 打ち切りから応答1文字目までの遅れは約3ms。コマンド受信(約5ms)・応答送信(約2ms)の
  * 時間は含まないので、大会の持ち時間に対しては余裕を持った time_ms を渡すこと。
  *
@@ -225,6 +227,30 @@ static char square_to_key(int sq) {
     return KEY_CHARS[col_of(sq) * 8 + row_of(sq)];
 }
 
+/*
+ * キーマトリクス (MMIO 0x8000_0028, src/board_io.v)
+ *   読み出し: bit8 = 押下イベントあり, bit5..0 = キー番号 (行*8+列)
+ *   書き込み: イベントを1つ消費する
+ */
+#ifdef OTHELLO_HOST_TEST
+static char wait_key(void) { return uart_getchar(); }
+#else
+#define KEYPAD (*(volatile uint32_t *)0x80000028u)
+
+/* UART からの1文字か、キーマトリクスの押下のどちらか先に来た方を返す。
+   キーマトリクスのキー番号 i は KEY_CHARS[i] と同じマスになる */
+static char wait_key(void) {
+    while (1) {
+        if (*UART_RX_STAT & 1) return *UART_RX_DATA;
+        uint32_t k = KEYPAD;
+        if (k & 0x100) {
+            KEYPAD = 0; /* 消費 */
+            return KEY_CHARS[k & 0x3F];
+        }
+    }
+}
+#endif
+
 /* "d3[q]" のようにマスとキーを表示する */
 static void put_square_key(int sq) {
     put_square(sq);
@@ -281,6 +307,9 @@ static void play_game(int human_is_black) {
 
     put_str(human_is_black ? "\nNew game: you = Black(X), AI = White(O)\n"
                            : "\nNew game: you = White(O), AI = Black(X)\n");
+#ifndef OTHELLO_HOST_TEST
+    while (KEYPAD & 0x100) KEYPAD = 0; /* メニュー中に押されたキーは捨てる */
+#endif
     put_str("Press one key per move ('keys' in the menu shows the map). '*' marks legal moves. '!' quits.\n");
     print_key_map();
 
@@ -305,7 +334,7 @@ static void play_game(int human_is_black) {
         if (is_human_turn) {
             put_str("Your move: ");
             char c;
-            do { c = uart_getchar(); } while (c == '\r' || c == '\n' || c == ' ');
+            do { c = wait_key(); } while (c == '\r' || c == '\n' || c == ' ');
             if (c == '!') {
                 put_str("!\nGame aborted.\n");
                 return;

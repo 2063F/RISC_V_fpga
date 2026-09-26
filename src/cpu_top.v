@@ -201,12 +201,13 @@ module cpu_top #(
     //       0x8000_0014 = UART TX status register (bit0 = busy)
     //       0x8000_0018 = UART RX data register
     //       0x8000_001C = UART RX status register (bit0 = ready)
-    //       0x8000_0020 = cycle counter (read-only, free-running, wraps)
+    //       0x8000_0030 = cycle counter (read-only, free-running, wraps)
+    //       (0x8000_0020-0x8000_002F belong to board_io in fpga_top)
     wire mmio_uart_tx_sel      = (alu_result == 32'h8000_0010);
     wire mmio_uart_stat_sel    = (alu_result == 32'h8000_0014);
     wire mmio_uart_rx_sel      = (alu_result == 32'h8000_0018);
     wire mmio_uart_rx_stat_sel = (alu_result == 32'h8000_001C);
-    wire mmio_cycle_sel        = (alu_result == 32'h8000_0020);
+    wire mmio_cycle_sel        = (alu_result == 32'h8000_0030);
     wire mmio_sel              = mmio_uart_tx_sel || mmio_uart_stat_sel ||
                                  mmio_uart_rx_sel || mmio_uart_rx_stat_sel ||
                                  mmio_cycle_sel;

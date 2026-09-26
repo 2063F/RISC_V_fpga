@@ -1,6 +1,6 @@
 /* 経過時間の測り方:
  *   PC版 / ホスト上のテスト版 : clock()
- *   FPGA版                    : CPU のサイクルカウンタ (MMIO 0x8000_0020, 50MHz) */
+ *   FPGA版                    : CPU のサイクルカウンタ (MMIO 0x8000_0030, 50MHz) */
 #if defined(OTHELLO_BAREMETAL) && !defined(OTHELLO_HOST_TEST)
 #define USE_CYCLE_COUNTER 1
 #endif
@@ -78,7 +78,7 @@ static void store_killer(int depth, int move) {
  * （サイクルカウンタの読み出しはロード1命令なので安い）。
  */
 #ifdef USE_CYCLE_COUNTER
-#define CYCLE_COUNTER (*(volatile uint32_t *)0x80000020)
+#define CYCLE_COUNTER (*(volatile uint32_t *)0x80000030)
 #ifndef OTHELLO_CPU_KHZ
 #define OTHELLO_CPU_KHZ 50000u /* 50 MHz */
 #endif

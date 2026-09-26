@@ -5,7 +5,7 @@
 // Features:
 // - Instantiates the single-cycle RISC-V CPU.
 // - Loads the loop55.hex test program (1+2+...+10 = 55).
-// - Exposes simple MMIO for LED and button access.
+// - Exposes simple MMIO for LED, button and 8x8 key matrix access.
 // - Displays status on the 2 onboard LEDs:
 //   - LED[0]: Blinks at ~1Hz to show that the system clock is running (heartbeat).
 //   - LED[1]: Turns ON constantly if the CPU successfully computes x1 = 55.
@@ -13,14 +13,17 @@
 // =============================================================================
 
 module fpga_top #(
-    parameter INIT_FILE = "examples/loop55.hex"
+    parameter INIT_FILE = "examples/loop55.hex",
+    parameter KEY_ROW_CYCLES = 25000  // key matrix: clocks per row (0.5 ms)
 ) (
     input  wire       clk,       // 50 MHz onboard crystal oscillator
     input  wire       rst_btn,   // Reset button (active high)
     input  wire       user_btn,  // User button (active high)
     output reg  [1:0] led,       // 2x onboard LEDs
     output wire       uart_tx,   // UART TX pin (connect to USB-UART RX)
-    input  wire       uart_rx    // UART RX pin (connect to USB-UART TX)
+    input  wire       uart_rx,   // UART RX pin (connect to USB-UART TX)
+    output wire [7:0] kbd_row_n, // Key matrix rows (driven low one at a time, else Hi-Z)
+    input  wire [7:0] kbd_col_n  // Key matrix columns (pulled up, low = pressed)
 );
 
     // =========================================================================
@@ -65,8 +68,30 @@ module fpga_top #(
         .write_en   (mem_write_en),
         .read_en    (mem_read_en),
         .user_btn   (user_btn),
+        .key_valid  (key_valid),
+        .key_index  (key_index),
+        .key_pop    (key_pop),
         .read_data  (mem_read_data),
         .led_ctrl   (mmio_led_ctrl)
+    );
+
+    // =========================================================================
+    // 8x8 Key Switch Matrix (MMIO 0x8000_0028 via board_io)
+    // =========================================================================
+    wire       key_valid;
+    wire [5:0] key_index;
+    wire       key_pop;
+
+    keypad_matrix #(
+        .ROW_CYCLES (KEY_ROW_CYCLES)
+    ) keypad (
+        .clk       (clk),
+        .rst_n     (cpu_rst_n),
+        .row_n     (kbd_row_n),
+        .col_n     (kbd_col_n),
+        .pop       (key_pop),
+        .key_valid (key_valid),
+        .key_index (key_index)
     );
 
     // =========================================================================
