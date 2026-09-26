@@ -89,8 +89,26 @@ powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Interactive
 ```
 
 `b` で先手 (黒 X)、`w` で後手 (白 O)。`*` が着手可能なマスです。
-`f5` のように入力して Enter。`q` で対局を中断します。
 (UART 端末の都合で表示は英語です)
+
+対局中は **キーを1つ押すだけ** で着手します (Enter 不要)。
+`0`〜`9`, `a`〜`z`, `A`〜`Z`, `;`, `:` の64文字が、順に
+1a, 2a, …, 8a, 1b, …, 7h, 8h のマスに対応します (数字=行、英字=列)。
+`!` で対局を中断します。対応表はメニューで `keys` と打つと表示されます。
+
+```
+   a b c d e f g h
+ 8 7 f n v D L T :
+ 7 6 e m u C K S ;
+ 6 5 d l t B J R Z
+ 5 4 c k s A I Q Y
+ 4 3 b j r z H P X
+ 3 2 a i q y G O W
+ 2 1 9 h p x F N V
+ 1 0 8 g o w E M U
+```
+
+AI の着手も `c5[k]` のようにマスとキーの両方で表示します。
 
 ### GUI で対戦
 

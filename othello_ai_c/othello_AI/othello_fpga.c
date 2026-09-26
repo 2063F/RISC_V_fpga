@@ -13,7 +13,10 @@
  *                       を返す（othello_gui.py --serial から使う）
  *   help              : メニュー再表示
  *
- * 対局中は "f5" のように着手を入力する。"q" で対局を中断してメニューへ戻る。
+ * 対局中はキー1つで着手する (Enter 不要)。キーとマスの対応は
+ *   0〜9, a〜z, A〜Z, ';', ':' の64文字を順に 1a, 2a, …, 8a, 1b, …, 7h, 8h
+ * （数字=行、英字=列。行が先に進む）。'!' で対局を中断してメニューへ戻る。
+ * メニューで "keys" と打つと対応表を表示する。
  *
  * 思考時間は CPU のサイクルカウンタ (MMIO 0x8000_0020) で測り、time_ms で打ち切る。
  * 打ち切りから応答1文字目までの遅れは約3ms。コマンド受信(約5ms)・応答送信(約2ms)の
@@ -200,6 +203,52 @@ static void cmd_bestmove(const char *args) {
     put_str("\n");
 }
 
+/* ------------------------------------------------------- キー入力 <-> マス */
+
+/* 64文字を順に 1a, 2a, ..., 8a, 1b, ..., 8h に割り当てる */
+static const char KEY_CHARS[65] =
+    "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ;:";
+
+/* キー -> マス番号 (sq = row*8 + col)。対応しない文字なら -1 */
+static int key_to_square(char c) {
+    for (int i = 0; i < 64; i++) {
+        if (KEY_CHARS[i] == c) {
+            int col = i / 8;   /* a〜h */
+            int row = i % 8;   /* 1〜8 */
+            return sq_of(col, row);
+        }
+    }
+    return -1;
+}
+
+static char square_to_key(int sq) {
+    return KEY_CHARS[col_of(sq) * 8 + row_of(sq)];
+}
+
+/* "d3[q]" のようにマスとキーを表示する */
+static void put_square_key(int sq) {
+    put_square(sq);
+    uart_putchar('[');
+    uart_putchar(square_to_key(sq));
+    uart_putchar(']');
+}
+
+/* キーとマスの対応表（盤面と同じ向き） */
+static void print_key_map(void) {
+    put_str("\nKey map (press one key to play that square)\n");
+    put_str("   a b c d e f g h\n");
+    for (int r = 7; r >= 0; r--) {
+        uart_putchar(' ');
+        uart_putchar((char)('1' + r));
+        uart_putchar(' ');
+        for (int c = 0; c < 8; c++) {
+            uart_putchar(square_to_key(sq_of(c, r)));
+            uart_putchar(' ');
+        }
+        put_str("\n");
+    }
+}
+
 /* ------------------------------------------------------------- 対局モード */
 
 static void print_board_ui(Bitboard black, Bitboard white, Bitboard hint) {
@@ -229,11 +278,11 @@ static void print_board_ui(Bitboard black, Bitboard white, Bitboard hint) {
 static void play_game(int human_is_black) {
     Bitboard black = INIT_BLACK, white = INIT_WHITE;
     int player_is_black = 1;
-    char line[LINE_MAX];
 
     put_str(human_is_black ? "\nNew game: you = Black(X), AI = White(O)\n"
                            : "\nNew game: you = White(O), AI = Black(X)\n");
-    put_str("Enter a move like f5. '*' marks legal moves. 'q' quits.\n");
+    put_str("Press one key per move ('keys' in the menu shows the map). '*' marks legal moves. '!' quits.\n");
+    print_key_map();
 
     while (1) {
         Bitboard P = player_is_black ? black : white;
@@ -255,14 +304,21 @@ static void play_game(int human_is_black) {
         int sq;
         if (is_human_turn) {
             put_str("Your move: ");
-            read_line(line, sizeof(line));
-            const char *p = skip_spaces(line);
-            if (p[0] == 'q' || p[0] == 'Q') {
-                put_str("Game aborted.\n");
+            char c;
+            do { c = uart_getchar(); } while (c == '\r' || c == '\n' || c == ' ');
+            if (c == '!') {
+                put_str("!\nGame aborted.\n");
                 return;
             }
-            sq = parse_square(p);
-            if (sq < 0 || !(moves & (1ULL << sq))) {
+            sq = key_to_square(c);
+            if (sq < 0) {
+                uart_putchar(c);
+                put_str("\nUnknown key. Use 0-9 a-z A-Z ; :\n");
+                continue;
+            }
+            put_square_key(sq);
+            put_str("\n");
+            if (!(moves & (1ULL << sq))) {
                 put_str("Illegal move. Try again.\n");
                 continue;
             }
@@ -272,7 +328,7 @@ static void play_game(int human_is_black) {
                                              AI_MAX_DEPTH, AI_TIME_MS, ENDGAME_THRESHOLD);
             sq = r.square;
             put_str("AI plays ");
-            if (sq >= 0) put_square(sq); else put_str("PASS");
+            if (sq >= 0) put_square_key(sq); else put_str("PASS");
             put_str("  (score=");
             put_score(r.score);
             put_str(" depth=");
@@ -309,6 +365,7 @@ static void print_help(void) {
     put_str("\n=== Othello AI on RISC-V (RV32IM) ===\n");
     put_str("  b    : play as Black (first move)\n");
     put_str("  w    : play as White\n");
+    put_str("  keys : show which key places a stone on which square\n");
     put_str("  BESTMOVE <black_hex16> <white_hex16> <b|w> <depth> <time_ms> <endgame>\n");
     put_str("  help : show this menu\n");
 }
@@ -326,6 +383,8 @@ int main(void) {
             play_game(1);
         } else if ((p[0] == 'w' || p[0] == 'W') && p[1] == '\0') {
             play_game(0);
+        } else if (starts_with(p, "keys")) {
+            print_key_map();
         } else if (starts_with(p, "QUIT")) {
             /* engine_cli 互換: ボード上では何もしない */
         } else {
