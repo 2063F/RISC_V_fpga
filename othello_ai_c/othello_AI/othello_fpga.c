@@ -167,6 +167,47 @@ static int starts_with(const char *s, const char *prefix) {
     return 1;
 }
 
+/* ------------------------------------------------------- ドットマトリクス LED */
+
+/*
+ * 8x8 赤/緑ドットマトリクス LED (LTP-12188M-08, src/led_matrix_bicolor.v) に盤面を出す。
+ *   白の石 = 赤、黒の石 = 緑
+ * LED のフレームバッファは bit (LED行*8 + LED列)。LED の「行1」を上にして置いたとき
+ * 盤面の8段目が上に来るよう、既定では上下を反転して書く (LED_FLIP_VERTICAL)。
+ * LED を逆向きに取り付けた場合は 0 にする。
+ */
+#ifndef LED_FLIP_VERTICAL
+#define LED_FLIP_VERTICAL 1
+#endif
+
+#ifdef OTHELLO_HOST_TEST
+static void led_show(Bitboard black, Bitboard white) { (void)black; (void)white; }
+#else
+/* 上下反転 = 8バイトの並びを逆にする */
+static Bitboard flip_vertical(Bitboard bb) {
+    Bitboard r = 0;
+    for (int i = 0; i < 8; i++) {
+        r = (r << 8) | (bb & 0xFF);
+        bb >>= 8;
+    }
+    return r;
+}
+
+#define LED_RED_LO (*(volatile uint32_t *)0x80000040u)
+#define LED_RED_HI (*(volatile uint32_t *)0x80000044u)
+#define LED_GRN_LO (*(volatile uint32_t *)0x80000048u)
+#define LED_GRN_HI (*(volatile uint32_t *)0x8000004Cu)
+
+static void led_show(Bitboard black, Bitboard white) {
+    Bitboard red = LED_FLIP_VERTICAL ? flip_vertical(white) : white;
+    Bitboard grn = LED_FLIP_VERTICAL ? flip_vertical(black) : black;
+    LED_RED_LO = (uint32_t)red;
+    LED_RED_HI = (uint32_t)(red >> 32);
+    LED_GRN_LO = (uint32_t)grn;
+    LED_GRN_HI = (uint32_t)(grn >> 32);
+}
+#endif
+
 /* ------------------------------------------------------- BESTMOVE コマンド */
 
 static void cmd_bestmove(const char *args) {
@@ -190,6 +231,7 @@ static void cmd_bestmove(const char *args) {
         return;
     }
     int player_is_black = (player_ch == 'b' || player_ch == 'B');
+    led_show(black, white);
 
     SearchResult r = find_best_move(black, white, player_is_black,
                                      (int)max_depth, time_ms, (int)endgame_threshold);
@@ -203,6 +245,15 @@ static void cmd_bestmove(const char *args) {
     uart_putchar(' ');
     put_int((int32_t)r.nodes);
     put_str("\n");
+
+    /* 応答を送ってから、AI が打った後の盤面を LED に出す */
+    if (r.square >= 0) {
+        Bitboard P = player_is_black ? black : white;
+        Bitboard O = player_is_black ? white : black;
+        Bitboard nP, nO;
+        apply_move(P, O, r.square, &nP, &nO);
+        if (player_is_black) led_show(nP, nO); else led_show(nO, nP);
+    }
 }
 
 /* ------------------------------------------------------- キー入力 <-> マス */
@@ -278,6 +329,7 @@ static void print_key_map(void) {
 /* ------------------------------------------------------------- 対局モード */
 
 static void print_board_ui(Bitboard black, Bitboard white, Bitboard hint) {
+    led_show(black, white);
     put_str("\n   a b c d e f g h\n");
     for (int r = 7; r >= 0; r--) {
         uart_putchar(' ');

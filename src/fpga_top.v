@@ -5,7 +5,7 @@
 // Features:
 // - Instantiates the single-cycle RISC-V CPU.
 // - Loads the loop55.hex test program (1+2+...+10 = 55).
-// - Exposes simple MMIO for LED, button and 8x8 key matrix access.
+// - Exposes simple MMIO for LED, button, 8x8 key matrix and dot matrix LED.
 // - Displays status on the 2 onboard LEDs:
 //   - LED[0]: Blinks at ~1Hz to show that the system clock is running (heartbeat).
 //   - LED[1]: Turns ON constantly if the CPU successfully computes x1 = 55.
@@ -14,7 +14,9 @@
 
 module fpga_top #(
     parameter INIT_FILE = "examples/loop55.hex",
-    parameter KEY_ROW_CYCLES = 25000  // key matrix: clocks per row (0.5 ms)
+    parameter KEY_ROW_CYCLES = 25000, // key matrix: clocks per row (0.5 ms)
+    parameter LED_ROW_CYCLES = 50000, // dot matrix LED: clocks per row (1 ms)
+    parameter LED_BLANK_CYCLES = 250  // dot matrix LED: all-off time per row change (5 us)
 ) (
     input  wire       clk,       // 50 MHz onboard crystal oscillator
     input  wire       rst_btn,   // Reset button (active high)
@@ -23,7 +25,10 @@ module fpga_top #(
     output wire       uart_tx,   // UART TX pin (connect to USB-UART RX)
     input  wire       uart_rx,   // UART RX pin (connect to USB-UART TX)
     output wire [7:0] kbd_row_n, // Key matrix rows (driven low one at a time, else Hi-Z)
-    input  wire [7:0] kbd_col_n  // Key matrix columns (pulled up, low = pressed)
+    input  wire [7:0] kbd_col_n, // Key matrix columns (pulled up, low = pressed)
+    output wire [7:0] led_row,   // Dot matrix LED anode rows (via PNP, active low)
+    output wire [7:0] led_col_r, // Dot matrix LED red cathodes (active low)
+    output wire [7:0] led_col_g  // Dot matrix LED green cathodes (active low)
 );
 
     // =========================================================================
@@ -92,6 +97,23 @@ module fpga_top #(
         .pop       (key_pop),
         .key_valid (key_valid),
         .key_index (key_index)
+    );
+
+    // =========================================================================
+    // 8x8 Red/Green Dot Matrix LED (MMIO 0x8000_0040-0x8000_004C, write only)
+    // =========================================================================
+    led_matrix_bicolor #(
+        .ROW_CYCLES   (LED_ROW_CYCLES),
+        .BLANK_CYCLES (LED_BLANK_CYCLES)
+    ) dot_matrix (
+        .clk        (clk),
+        .rst_n      (cpu_rst_n),
+        .addr       (mem_addr),
+        .write_data (mem_write_data),
+        .write_en   (mem_write_en),
+        .row        (led_row),
+        .col_red    (led_col_r),
+        .col_grn    (led_col_g)
     );
 
     // =========================================================================
