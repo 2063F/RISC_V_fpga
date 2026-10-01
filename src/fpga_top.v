@@ -4,7 +4,8 @@
 // =============================================================================
 // Features:
 // - Instantiates the single-cycle RISC-V CPU.
-// - Loads the loop55.hex test program (1+2+...+10 = 55).
+// - Loads the Othello AI program by default (INIT_FILE); examples/loop55.hex
+//   (1+2+...+10 = 55) is the minimal bring-up test.
 // - Exposes simple MMIO for LED, button, 8x8 key matrix, USB keyboard and
 //   dot matrix LED.
 // - Displays status on the 2 onboard LEDs:
@@ -14,7 +15,7 @@
 // =============================================================================
 
 module fpga_top #(
-    parameter INIT_FILE = "examples/loop55.hex",
+    parameter INIT_FILE = "othello_ai_c/othello_AI/othello_fpga.hex",
     parameter KEY_ROW_CYCLES = 25000, // key matrix: clocks per row (0.5 ms)
     parameter LED_ROW_CYCLES = 50000, // dot matrix LED: clocks per row (1 ms)
     parameter LED_BLANK_CYCLES = 250  // dot matrix LED: all-off time per row change (5 us)

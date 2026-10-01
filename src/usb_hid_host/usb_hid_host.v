@@ -39,7 +39,7 @@ module usb_hid_host (
 wire data_rdy;          // data ready
 wire data_strobe;       // data strobe for each byte
 wire [7:0] ukpdat;		// actual data
-reg [7:0] regs [7];     // 0 (VID_L), 1 (VID_H), 2 (PID_L), 3 (PID_H), 4 (INTERFACE_CLASS), 5 (INTERFACE_SUBCLASS), 6 (INTERFACE_PROTOCOL)
+reg [7:0] regs [0:6];     // 0 (VID_L), 1 (VID_H), 2 (PID_L), 3 (PID_H), 4 (INTERFACE_CLASS), 5 (INTERFACE_SUBCLASS), 6 (INTERFACE_PROTOCOL)
 wire save;			    // save dat[b] to output register r
 wire [3:0] save_r;      // which register to save to
 wire [3:0] save_b;      // dat[b]
@@ -53,7 +53,7 @@ ukp ukp(
 
 reg  [3:0] rcvct;		// counter for recv data
 reg  data_strobe_r, data_rdy_r;	// delayed data_strobe and data_rdy
-reg  [7:0] dat[8];		// data in last response
+reg  [7:0] dat[0:7];		// data in last response
 assign dbg_hid_report = {dat[7], dat[6], dat[5], dat[4], dat[3], dat[2], dat[1], dat[0]};
 // assign dbg_regs = regs;
 

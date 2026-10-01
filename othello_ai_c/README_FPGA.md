@@ -56,11 +56,8 @@ python ..\..\tools\bin2hex.py othello_fpga.bin othello_fpga.hex
 
 ## FPGA への書き込み
 
-1. `src/fpga_top.v` の `INIT_FILE` を変更します。
-
-   ```verilog
-   parameter INIT_FILE = "othello_ai_c/othello_AI/othello_fpga.hex"
-   ```
+1. `src/fpga_top.v` の `INIT_FILE` は既定でオセロAI
+   (`othello_ai_c/othello_AI/othello_fpga.hex`) になっています。
 
 2. 合成・書き込み (リポジトリ直下で実行)。
 

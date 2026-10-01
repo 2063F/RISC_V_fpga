@@ -15,7 +15,9 @@ module tb_fpga_top;
     integer timeout;
 
     // Instantiate FPGA top-level wrapper
-    fpga_top uut (
+    fpga_top #(
+        .INIT_FILE("examples/loop55.hex")
+    ) uut (
         .clk      (clk),
         .rst_btn  (rst_btn),
         .user_btn (user_btn),

@@ -267,7 +267,7 @@ python tools/bin2hex.py examples/uart_echo_c.bin > examples/uart_echo_c.hex
   - ボタン/LED の MMIO 確認なら `examples/button_led.hex`
   - UART まで一通り動かすなら `examples/printf_demo.hex`
 2. `src/fpga_top.v` の `INIT_FILE` を使いたい hex に合わせます。
-  - 既定値は `examples/loop55.hex` です。
+  - 既定値はオセロAI の `othello_ai_c/othello_AI/othello_fpga.hex` です。
   - `build.tcl` はここから hex のパスを読むので、変更箇所はこの1か所だけです。
 3. 合成・配置配線します。
 
