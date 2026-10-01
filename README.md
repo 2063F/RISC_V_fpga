@@ -16,6 +16,7 @@ RV32I 命令セットを段階的に実装し、シングルサイクルCPU か�
 - サイクルカウンタ (読み出し専用 MMIO `0x8000_0030`、50 MHz で加算) を追加
 - 8x8 キースイッチマトリクスの走査回路 (MMIO `0x8000_0028`、`src/keypad_matrix.v`) を追加
 - 8x8 赤/緑ドットマトリクス LED の駆動回路 (MMIO `0x8000_0040`〜、`src/led_matrix_bicolor.v`) を追加
+- Dock の USB-A ポートの USB キーボード入力 (MMIO `0x8000_002C`、`src/usb_keyboard.v` + [usb_hid_host](https://github.com/nand2mario/usb_hid_host)) を追加
 - 3段パイプライン化（フェッチ / デコード+レジスタ読み出し / 実行+書き戻し）
 - EX から ID へのフォワーディングでデータハザードを解決
 - 命令ROM・データRAM を BSRAM に配置 (ロード時1サイクルストール)

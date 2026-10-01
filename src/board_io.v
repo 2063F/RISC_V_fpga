@@ -12,6 +12,10 @@
 //                 - read: bit 8 = an event is waiting, bits 5:0 = key index
 //                   (row * 8 + col). Reading does not consume the event.
 //                 - write (any value): consume the event
+//   0x8000_002C : USB keyboard event register (usb_keyboard.v)
+//                 - read: bit 9 = keyboard connected, bit 8 = an event is
+//                   waiting, bits 5:0 = square index (0 = A1, 1 = A2, ... 63 = H8)
+//                 - write (any value): consume the event
 // =============================================================================
 
 module board_io (
@@ -25,6 +29,10 @@ module board_io (
     input  wire        key_valid,
     input  wire [5:0]  key_index,
     output wire        key_pop,
+    input  wire        usbkey_valid,
+    input  wire [5:0]  usbkey_index,
+    input  wire        usbkey_connected,
+    output wire        usbkey_pop,
     output reg  [31:0] read_data,
     output reg         led_ctrl
 );
@@ -32,9 +40,11 @@ module board_io (
     localparam [31:0] LED_ADDR = 32'h8000_0020;
     localparam [31:0] BTN_ADDR = 32'h8000_0024;
     localparam [31:0] KEY_ADDR = 32'h8000_0028;
+    localparam [31:0] USBKEY_ADDR = 32'h8000_002C;
 
     // Stores never stall in the CPU, so write_en is a single-cycle pulse
-    assign key_pop = write_en && (addr == KEY_ADDR);
+    assign key_pop    = write_en && (addr == KEY_ADDR);
+    assign usbkey_pop = write_en && (addr == USBKEY_ADDR);
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -51,6 +61,7 @@ module board_io (
                 LED_ADDR: read_data = {31'd0, led_ctrl};
                 BTN_ADDR: read_data = {31'd0, user_btn};
                 KEY_ADDR: read_data = {23'd0, key_valid, 2'd0, key_index};
+                USBKEY_ADDR: read_data = {22'd0, usbkey_connected, usbkey_valid, 2'd0, usbkey_index};
                 default:  read_data = 32'd0;
             endcase
         end

@@ -142,6 +142,58 @@ MMIO の仕様 (`src/board_io.v`):
 
 CPU が読まない間に押したキーも順に溜まります (同じキーを2回押した分は1回になります)。
 
+### USB キーボードで着手する
+
+Dock の **USB-A ポート** に USB キーボードを挿すと、対局中の着手に使えます
+(UART・キーマトリクスと併用できます)。日本語 (JIS) 配列で、次のキーが
+**A1, A2, …, A8, B1, …, H8** の順に対応します (数字 = 段、英字 = 列)。
+
+| マス | キー |
+|:--|:--|
+| A1〜A8, B1〜B4 | F1 F2 F3 F4 F5 F6 F7 F8 / F9 F10 F11 F12 |
+| B5〜B8, C1〜C8, D1〜D2 | 1 2 3 4 / 5 6 7 8 9 0 - ^ / ¥ BackSpace |
+| D3〜D8, E1〜E6 | Q W E R T Y / U I O P @ [ |
+| E7〜E8, F1〜F8, G1〜G2 | A S / D F G H J K L ; / : ] |
+| G3〜G8, H1〜H6 | Z X C V B N / M , . / ＼(ろ) 右Shift |
+| H7, H8 | 左Alt, 無変換 |
+
+```
+        F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12
+        A1 A2 A3 A4 A5 A6 A7 A8 B1 B2  B3  B4
+     1  2  3  4  5  6  7  8  9  0  -  ^  ¥  BS
+     B5 B6 B7 B8 C1 C2 C3 C4 C5 C6 C7 C8 D1 D2
+       Q  W  E  R  T  Y  U  I  O  P  @  [
+       D3 D4 D5 D6 D7 D8 E1 E2 E3 E4 E5 E6
+        A  S  D  F  G  H  J  K  L  ;  :  ]
+        E7 E8 F1 F2 F3 F4 F5 F6 F7 F8 G1 G2
+         Z  X  C  V  B  N  M  ,  .  /  ろ 右Shift
+         G3 G4 G5 G6 G7 G8 H1 H2 H3 H4 H5 H6
+   左Alt = H7   無変換 = H8
+```
+
+- キーを押した瞬間に着手します。押しっぱなしでも1回だけです。
+- 割り当ての無いキー (Enter・Space・左Shift など) は無視します。
+- AI の思考中に押したキーは溜まり、次の自分の手番で使われます
+  (メニュー中に押したキーは対局開始時に捨てます)。
+- 回路: `src/usb_keyboard.v` (キーコード → マス番号の変換)、MMIO `0x8000_002C`。
+  USB の処理は nand2mario さんの [usb_hid_host](https://github.com/nand2mario/usb_hid_host)
+  (Apache-2.0、`src/usb_hid_host/`) を使い、PLL で作った 12MHz で動かしています。
+
+制限:
+
+- **低速 (Low-speed, 1.5Mbps) の USB キーボードのみ** 対応です。一般的な
+  事務用キーボードの多くは低速ですが、ゲーミングキーボードなど全速 (Full-speed)
+  専用の機種は動きません。USB ハブ経由も不可です。
+- 一度に認識できる同時押しは4キーまでです (着手には1キーで足ります)。
+- USB 機器そのものはシミュレーションできないため、キーボードからのレポートを
+  受け取った後の処理だけをテストしています。実機での動作は未確認です。
+
+MMIO の仕様 (`src/board_io.v`):
+
+| アドレス | 読み出し | 書き込み |
+|:--|:--|:--|
+| `0x8000_002C` | bit9 = キーボード接続中、bit8 = 押下イベントあり、bit5:0 = マス番号 (0 = A1 … 63 = H8) | 任意の値でイベントを1つ消費 |
+
 ### 2色ドットマトリクス LED で盤面を表示する
 
 8x8 の赤/緑ドットマトリクス LED (Lite-On LTP-12188M-08) に盤面を表示します。
@@ -285,6 +337,17 @@ vvp sim/tb_othello_fpga.out
 
 CPU 上で `BESTMOVE` を4局面実行し、PC 上で同じソースを動かした結果と一致するか、
 250ms 指定で時間内に応答するかを確認します (十数分かかります)。
+
+FPGA 全体 (キーマトリクス・USB キーボード・LED を含む) の統合テスト:
+
+```bash
+iverilog -I src -o sim/tb_othello_keypad.out sim/tb_othello_keypad.v src/*.v \
+  src/usb_hid_host/*.v sim/models/gowin_pll_usb.v
+vvp sim/tb_othello_keypad.out
+```
+
+`fpga_top` を含むシミュレーションでは、Gowin の PLL (`src/gowin/gowin_pll_usb.v`)
+の代わりに `sim/models/gowin_pll_usb.v` を使ってください。
 
 速度を測ったりプロファイルを取ったりするときは、Verilator 版が数百倍速くて便利です。
 

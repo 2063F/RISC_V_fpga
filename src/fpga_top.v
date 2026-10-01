@@ -5,7 +5,8 @@
 // Features:
 // - Instantiates the single-cycle RISC-V CPU.
 // - Loads the loop55.hex test program (1+2+...+10 = 55).
-// - Exposes simple MMIO for LED, button, 8x8 key matrix and dot matrix LED.
+// - Exposes simple MMIO for LED, button, 8x8 key matrix, USB keyboard and
+//   dot matrix LED.
 // - Displays status on the 2 onboard LEDs:
 //   - LED[0]: Blinks at ~1Hz to show that the system clock is running (heartbeat).
 //   - LED[1]: Turns ON constantly if the CPU successfully computes x1 = 55.
@@ -28,7 +29,9 @@ module fpga_top #(
     input  wire [7:0] kbd_col_n, // Key matrix columns (pulled up, low = pressed)
     output wire [7:0] led_row,   // Dot matrix LED anode rows (via PNP, active low)
     output wire [7:0] led_col_r, // Dot matrix LED red cathodes (active low)
-    output wire [7:0] led_col_g  // Dot matrix LED green cathodes (active low)
+    output wire [7:0] led_col_g, // Dot matrix LED green cathodes (active low)
+    inout  wire       usb_dp,    // USB-A host port D+ (low-speed USB 1.1)
+    inout  wire       usb_dm     // USB-A host port D-
 );
 
     // =========================================================================
@@ -76,6 +79,10 @@ module fpga_top #(
         .key_valid  (key_valid),
         .key_index  (key_index),
         .key_pop    (key_pop),
+        .usbkey_valid     (usbkey_valid),
+        .usbkey_index     (usbkey_index),
+        .usbkey_connected (usbkey_connected),
+        .usbkey_pop       (usbkey_pop),
         .read_data  (mem_read_data),
         .led_ctrl   (mmio_led_ctrl)
     );
@@ -97,6 +104,67 @@ module fpga_top #(
         .pop       (key_pop),
         .key_valid (key_valid),
         .key_index (key_index)
+    );
+
+    // =========================================================================
+    // USB Keyboard on the Dock's USB-A port (MMIO 0x8000_002C via board_io)
+    // =========================================================================
+    // usb_hid_host runs on its own 12 MHz clock; usb_keyboard.v hands the key
+    // presses over to the 50 MHz CPU domain.
+    wire clk_usb;
+    gowin_pll_usb pll_usb (
+        .clkin  (clk),
+        .clkout (clk_usb)
+    );
+
+    reg [1:0] usb_rst_sync;
+    always @(posedge clk_usb) usb_rst_sync <= {usb_rst_sync[0], cpu_rst_n};
+
+    wire [1:0] usb_typ;
+    wire       usb_report;
+    wire [7:0] usb_mod, usb_key1, usb_key2, usb_key3, usb_key4;
+
+    usb_hid_host usb_host (
+        .usbclk        (clk_usb),
+        .usbrst_n      (usb_rst_sync[1]),
+        .usb_dm        (usb_dm),
+        .usb_dp        (usb_dp),
+        .typ           (usb_typ),
+        .report        (usb_report),
+        .conerr        (),
+        .key_modifiers (usb_mod),
+        .key1          (usb_key1),
+        .key2          (usb_key2),
+        .key3          (usb_key3),
+        .key4          (usb_key4),
+        .mouse_btn     (),
+        .mouse_dx      (),
+        .mouse_dy      (),
+        .game_l (), .game_r (), .game_u (), .game_d (),
+        .game_a (), .game_b (), .game_x (), .game_y (), .game_sel (), .game_sta (),
+        .dbg_hid_report ()
+    );
+
+    wire       usbkey_valid;
+    wire [5:0] usbkey_index;
+    wire       usbkey_connected;
+    wire       usbkey_pop;
+
+    usb_keyboard usb_kbd (
+        .clk        (clk),
+        .rst_n      (cpu_rst_n),
+        .pop        (usbkey_pop),
+        .key_valid  (usbkey_valid),
+        .key_index  (usbkey_index),
+        .connected  (usbkey_connected),
+        .usbclk     (clk_usb),
+        .usb_report (usb_report),
+        .usb_typ    (usb_typ),
+        .usb_mod    (usb_mod),
+        .usb_key1   (usb_key1),
+        .usb_key2   (usb_key2),
+        .usb_key3   (usb_key3),
+        .usb_key4   (usb_key4)
     );
 
     // =========================================================================

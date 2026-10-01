@@ -19,6 +19,8 @@
  * メニューで "keys" と打つと対応表を表示する。
  * FPGA に直結した 8x8 キーマトリクス (src/keypad_matrix.v, MMIO 0x8000_0028) の
  * キー番号 (行*8+列) も同じ順番で 1a, 2a, ... に対応し、UART のキーと同じように使える。
+ * Dock の USB-A ポートにつないだ USB キーボード (src/usb_keyboard.v, MMIO 0x8000_002C)
+ * も同様に、F1〜F12, 1〜BS, Q〜[, A〜], Z〜右Shift, 左Alt, 無変換 が順に A1〜H8 になる。
  *
  * 思考時間は CPU のサイクルカウンタ (MMIO 0x8000_0030) で測り、time_ms で打ち切る。
  * 打ち切りから応答1文字目までの遅れは約3ms。コマンド受信(約5ms)・応答送信(約2ms)の
@@ -279,23 +281,30 @@ static char square_to_key(int sq) {
 }
 
 /*
- * キーマトリクス (MMIO 0x8000_0028, src/board_io.v)
- *   読み出し: bit8 = 押下イベントあり, bit5..0 = キー番号 (行*8+列)
+ * キーマトリクス (MMIO 0x8000_0028) と USB キーボード (MMIO 0x8000_002C)。src/board_io.v
+ *   読み出し: bit8 = 押下イベントあり, bit5..0 = キー番号
+ *             (USB は bit9 = キーボード接続中。キー番号 0..63 = A1, A2, ..., H8)
  *   書き込み: イベントを1つ消費する
  */
 #ifdef OTHELLO_HOST_TEST
 static char wait_key(void) { return uart_getchar(); }
 #else
 #define KEYPAD (*(volatile uint32_t *)0x80000028u)
+#define USBKEY (*(volatile uint32_t *)0x8000002Cu)
 
-/* UART からの1文字か、キーマトリクスの押下のどちらか先に来た方を返す。
-   キーマトリクスのキー番号 i は KEY_CHARS[i] と同じマスになる */
+/* UART からの1文字、キーマトリクスの押下、USB キーボードの押下のうち
+   先に来たものを返す。キー番号 i は KEY_CHARS[i] と同じマスになる */
 static char wait_key(void) {
     while (1) {
         if (*UART_RX_STAT & 1) return *UART_RX_DATA;
         uint32_t k = KEYPAD;
         if (k & 0x100) {
             KEYPAD = 0; /* 消費 */
+            return KEY_CHARS[k & 0x3F];
+        }
+        k = USBKEY;
+        if (k & 0x100) {
+            USBKEY = 0;
             return KEY_CHARS[k & 0x3F];
         }
     }
@@ -361,6 +370,7 @@ static void play_game(int human_is_black) {
                            : "\nNew game: you = White(O), AI = Black(X)\n");
 #ifndef OTHELLO_HOST_TEST
     while (KEYPAD & 0x100) KEYPAD = 0; /* メニュー中に押されたキーは捨てる */
+    while (USBKEY & 0x100) USBKEY = 0;
 #endif
     put_str("Press one key per move ('keys' in the menu shows the map). '*' marks legal moves. '!' quits.\n");
     print_key_map();

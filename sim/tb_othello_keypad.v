@@ -1,16 +1,20 @@
 `timescale 1ns / 1ps
 // =============================================================================
-// tb_othello_keypad.v - fpga_top + オセロAI + キーマトリクス + ドットマトリクスLED
-//                       の統合テスト
+// tb_othello_keypad.v - fpga_top + オセロAI + キーマトリクス + USBキーボード +
+//                       ドットマトリクスLED の統合テスト
 // =============================================================================
 // UART で "b" を送って対局を始め、キーマトリクスの 行3・列2 (キー番号26 = 'q')
 // を押すと、ボードが d3 に着手して "Your move: d3[q]" と表示することを確認する。
 // ドットマトリクス LED のフレームバッファが、着手前後の盤面 (白=赤, 黒=緑,
 // 8段目が LED の行1) になっていることも確認する。
+// AI が応手した後、USB キーボードの '[' (A1から数えて37番目 = E6) を押すと
+// "Your move: e6[B]" と着手することも確認する。USB 機器はシミュレーションできない
+// ので、usb_hid_host の出力 (キーボードのレポート) を force で与えている。
 // 走査を速くするため KEY_ROW_CYCLES / LED_ROW_CYCLES を小さくしている。
 //
 //   make -C othello_ai_c/othello_AI fpga
-//   iverilog -I src -o sim/tb_othello_keypad.out sim/tb_othello_keypad.v src/*.v
+//   iverilog -I src -o sim/tb_othello_keypad.out sim/tb_othello_keypad.v src/*.v \
+//            src/usb_hid_host/*.v sim/models/gowin_pll_usb.v
 //   vvp sim/tb_othello_keypad.out
 // =============================================================================
 
@@ -27,6 +31,9 @@ module tb_othello_keypad;
     wire [7:0] kbd_row_n;
     wire [7:0] kbd_col_n;
     wire [7:0] led_row, led_col_r, led_col_g;
+    wire       usb_dp, usb_dm;
+    pulldown (usb_dp);   // Dock の 15kΩ プルダウン (機器未接続)
+    pulldown (usb_dm);
 
     always #(CLK_PERIOD/2) clk = ~clk;
 
@@ -46,7 +53,9 @@ module tb_othello_keypad;
         .kbd_col_n (kbd_col_n),
         .led_row   (led_row),
         .led_col_r (led_col_r),
-        .led_col_g (led_col_g)
+        .led_col_g (led_col_g),
+        .usb_dp    (usb_dp),
+        .usb_dm    (usb_dm)
     );
 
     integer fail_count = 0;
@@ -156,6 +165,28 @@ module tb_othello_keypad;
             $display("PASS: LED pins for row 3 (rank 5)");
         else begin
             $display("FAIL: LED pins row=%b red=%b grn=%b", led_row, led_col_r, led_col_g);
+            fail_count = fail_count + 1;
+        end
+
+        // ---- USB キーボードで着手: AI の応手 (c5) の後、'[' (usage 0x30) = E6
+        wait (line_len == 11 && line_buf[8*11-1:0] == "Your move: ");
+        force dut.usb_typ  = 2'd1;
+        force dut.usb_mod  = 8'd0;
+        force dut.usb_key1 = 8'h30;
+        force dut.usb_key2 = 8'd0;
+        force dut.usb_key3 = 8'd0;
+        force dut.usb_key4 = 8'd0;
+        @(negedge dut.clk_usb) force dut.usb_report = 1'b1;
+        @(negedge dut.clk_usb) force dut.usb_report = 1'b0;
+        wait (line_len == 0);
+        if (last_line[8*16-1:0] == "Your move: e6[B]") begin
+            $display("\nPASS: USB keyboard '[' played e6");
+        end else begin
+            $display("\nFAIL: unexpected line after USB key");
+            fail_count = fail_count + 1;
+        end
+        if (dut.usbkey_connected !== 1'b1) begin
+            $display("FAIL: USB keyboard not reported as connected");
             fail_count = fail_count + 1;
         end
 
