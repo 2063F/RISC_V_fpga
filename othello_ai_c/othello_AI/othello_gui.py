@@ -41,8 +41,8 @@ AI_MAX_DEPTH = 30
 AI_TIME_MS = 1200
 ENDGAME_THRESHOLD = 16
 
-# FPGA 版の設定。1手1分以内の規定なので、高速化前と同じ1手3秒考える
-FPGA_TIME_MS = 3000
+# FPGA 版の設定。1手1分以内の規定に余裕を持たせて1手50秒考える
+FPGA_TIME_MS = 50000
 FPGA_ENDGAME_THRESHOLD = 14
 
 
