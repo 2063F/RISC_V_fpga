@@ -41,9 +41,8 @@ AI_MAX_DEPTH = 30
 AI_TIME_MS = 1200
 ENDGAME_THRESHOLD = 16
 
-# FPGA 版の設定。1手 0.309 秒の大会規定に、UART の送受信 (約7ms) と
-# PC 側の遅延の余裕を持たせた思考時間にしている
-FPGA_TIME_MS = 250
+# FPGA 版の設定。1手1分以内の規定なので、高速化前と同じ1手3秒考える
+FPGA_TIME_MS = 3000
 FPGA_ENDGAME_THRESHOLD = 14
 
 

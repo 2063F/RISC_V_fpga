@@ -49,7 +49,7 @@ static char uart_getchar(void) {
 
 /* 対局モードの AI 設定。50MHz の RV32IM で 1 手数秒程度になるよう調整した値 */
 #define AI_MAX_DEPTH      60   /* 実際の深さは時間で決まる */
-#define AI_TIME_MS        250  /* 1手 0.309 秒の大会規定に通信分の余裕を持たせた値 */
+#define AI_TIME_MS        3000 /* 1手1分以内の規定なので、高速化前と同じ3秒考える */
 #define ENDGAME_THRESHOLD 14   /* 残り14マス以下で完全読みを試みる（時間内に読み切れなければ通常探索の手） */
 
 #define LINE_MAX 128
