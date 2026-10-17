@@ -8,6 +8,11 @@
 //                 - read returns the latched LED state in bit 0
 //   0x8000_0024 : User button status register
 //                 - read returns user_btn in bit 0
+//
+// read_data is registered: it answers the address one clock later. The CPU
+// samples external load data in the load's second (data) cycle with the
+// address held steady, so this costs nothing and keeps the address decode
+// off the CPU's write-back path.
 // =============================================================================
 
 module board_io (
@@ -33,13 +38,13 @@ module board_io (
         end
     end
 
-    always @(*) begin
-        read_data = 32'd0;
+    always @(posedge clk) begin
+        read_data <= 32'd0;
         if (read_en) begin
             case (addr)
-                LED_ADDR: read_data = {31'd0, led_ctrl};
-                BTN_ADDR: read_data = {31'd0, user_btn};
-                default:  read_data = 32'd0;
+                LED_ADDR: read_data <= {31'd0, led_ctrl};
+                BTN_ADDR: read_data <= {31'd0, user_btn};
+                default:  read_data <= 32'd0;
             endcase
         end
     end

@@ -7,7 +7,7 @@ Tang Primer 25K (Gowin GW5A-LV25MG121) 上で動作する RISC-V 互換 32ビッ
 
 RV32IM 命令セットを段階的に実装し、シングルサイクルCPU から始めて、
 最終的にパイプライン化された CPU + SoC を構築します。
-現在は 3 段パイプラインまで到達しており、次は SDRAM / 割り込み / CSR に取り組みます。
+現在は 3 段パイプラインに CSR・例外・割り込みを加えたところまで到達しており、次は SDRAM に取り組みます。
 
 ## 現在の完成状況
 
@@ -17,8 +17,11 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 - 3段パイプライン化（フェッチ / デコード+レジスタ読み出し / 実行+書き戻し）
 - EX から ID へのフォワーディングでデータハザードを解決
 - 命令ROM・データRAM を BSRAM に配置 (ロード時1サイクルストール)
-- `sim/` の全テストベンチ (21本) がパスする状態
+- マシンモードの CSR (Zicsr)・例外・割り込み (タイマ / ソフトウェア / UART受信) を実装
+  ([詳細](#csr例外割り込み))
+- `sim/` の全テストベンチ (23本) がパスする状態
 - Tang Primer 25K で合成・配置配線が通り、50 MHz 制約を満たす
+  (CSR・例外・割り込みの追加前の値。追加後は未計測)
 - **実機 (Tang Primer 25K) で動作確認済み**
   - `loop55` : LED[0] のハートビートと LED[1] 点灯 (x1 = 55 到達)
   - `printf_demo` : UART (COM ポート, 115200bps) にシミュレーションと同一の
@@ -42,8 +45,9 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 > 特殊化され、リソースも周波数も実態より良く出ます。設計の素の値を見たい
 > ときは `printf_demo.hex` のような命令種の多いプログラムで測ってください。
 
-> **注意: 本CPUは RV32IM のみで、C拡張 (圧縮命令) は未実装です。**
-> C をビルドするときは必ず `-march=rv32im -mabi=ilp32` を指定してください。
+> **注意: 本CPUは C拡張 (圧縮命令) を実装していません。**
+> C をビルドするときは必ず `-march=rv32im -mabi=ilp32` を指定してください
+> (CSR を使うコードは `-march=rv32im_zicsr`)。
 
 ## 開発ロードマップ
 
@@ -57,19 +61,98 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 | 6 | UART デバッグ環境 | ✅ |
 | 7 | M拡張 (多サイクル乗除算) | ✅ |
 | 8 | 3段パイプライン化 + フォワーディング | ✅ |
-| 9+ | SDRAM / 割り込み / CSR | 🔧 作業中 |
+| 9 | CSR / 例外 / 割り込み | ✅ |
+| 10+ | SDRAM | 🔧 作業中 |
 
 ## ISA
 
-- **ベース**: RV32I + M拡張 (RV32IM)
+- **ベース**: RV32I + M / Zicsr / Zifencei (RV32IM_Zicsr_Zifencei)、マシンモードのみ
 - **レジスタ**: 32本 × 32ビット (x0 = 常に0)
 - **命令長**: 固定 32ビット (C拡張の圧縮命令は未対応)
-- **実装済み命令**: 45
-  - RV32I 37命令: LUI, AUIPC, JAL, JALR, 分岐6, ロード5, ストア3,
-    即値演算9, レジスタ間演算10
+- **実装済み命令**: 57
+  - RV32I 40命令: LUI, AUIPC, JAL, JALR, 分岐6, ロード5, ストア3,
+    即値演算9, レジスタ間演算10, FENCE, ECALL, EBREAK
   - M拡張 8命令: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU
-- **未実装**: FENCE, ECALL, EBREAK, CSR命令。これらのオペコードはデコーダが
-  何もしない命令として扱い、例外も発生しません
+  - Zicsr 6命令: CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI
+  - 特権命令: MRET, WFI / Zifencei: FENCE.I
+- FENCE / FENCE.I / WFI は何もしない命令として実行します (キャッシュが無く、
+  命令ROMは書き換えられないため。WFI を NOP とすることは仕様上許されています)
+- 上記以外のエンコーディングはすべて不正命令例外になります
+
+## CSR・例外・割り込み
+
+マシンモード (M-mode) だけの最小構成です。トラップは EX ステージで取り、
+EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO への書き込みはすべて
+抑止) `mepc` にその PC を入れ、後続 2 命令を分岐成立時と同じく破棄します。
+
+### CSR
+
+| CSR | 内容 |
+|:--|:--|
+| `mstatus` | MIE (bit3), MPIE (bit7)。MPP (bit12:11) は常に 11 |
+| `misa` | `0x40001100` (RV32IM)。書き込みは無視 |
+| `mie` / `mip` | MSIE/MSIP (bit3), MTIE/MTIP (bit7), MEIE/MEIP (bit11)。`mip` は読み出し専用で割り込み線の状態を映す |
+| `mtvec` | BASE + MODE (0: direct, 1: vectored。vectored では割り込み N を BASE+4N へ) |
+| `mscratch` / `mepc` / `mcause` / `mtval` | トラップ用 |
+| `mcycle` / `minstret` (+`h`) | 64ビットカウンタ (書き込み可) |
+| `cycle` / `time` / `instret` (+`h`) | 読み出し専用。`time` はタイマの `mtime` |
+| `mvendorid` / `marchid` / `mimpid` / `mhartid` | すべて 0 |
+
+未実装の CSR へのアクセスと、読み出し専用 CSR への書き込みは不正命令例外です。
+
+### 例外 (`mcause`)
+
+| コード | 例外 | `mtval` |
+|:--|:--|:--|
+| 0 | 命令アドレス非整列 (分岐・ジャンプ先が 4 の倍数でない) | 飛び先アドレス |
+| 1 | 命令アクセスフォールト (命令ROM 0x0000_0000-0x0000_7FFF の外をフェッチ) | PC |
+| 2 | 不正命令 | 命令そのもの |
+| 3 | EBREAK | 0 |
+| 4 / 6 | ロード / ストアのアドレス非整列 | アクセスアドレス |
+| 11 | ECALL | 0 |
+
+ロード・ストアのアクセスフォールト (未実装アドレスへのアクセス) は実装していません。
+
+### 割り込み (`mcause` bit31 = 1)
+
+| コード | 割り込み | 要因 / 解除方法 |
+|:--|:--|:--|
+| 11 | マシン外部 | UART に受信データがある間。UART RX データの読み出しで解除 |
+| 3 | マシンソフトウェア | `msip` = 1 の間。`msip` に 0 を書いて解除 |
+| 7 | マシンタイマ | `mtime >= mtimecmp` の間。`mtimecmp` を先へ進めて解除 |
+
+優先順位は外部 > ソフトウェア > タイマ (仕様どおり)。割り込みは命令が EX に入った
+最初のサイクルでだけ受け付け、ロードの読み出しや乗除算が始まった命令は完了させて
+から次の命令で受け付けます (UART RX データの読み出しのような副作用を失わないため)。
+
+### タイマ (MMIO, ワードアクセスのみ)
+
+| アドレス | レジスタ |
+|:--|:--|
+| `0x8000_0100` | `msip` (bit0) |
+| `0x8000_0108` / `0x8000_010C` | `mtimecmp` 下位 / 上位 |
+| `0x8000_0110` / `0x8000_0114` | `mtime` 下位 / 上位 |
+
+`mtime` は `cpu_top` の `TIMER_DIV` クロック (既定 50) ごとに 1 進むので、
+50 MHz ではマイクロ秒カウンタになります。`mtimecmp` のリセット値は全ビット 1 です。
+
+### C から使う
+
+`examples/csr.h` に CSR アクセス用マクロ (`read_csr` / `write_csr` / `set_csr` /
+`clear_csr`)、定数、タイマ操作関数があります。トラップハンドラは GCC の
+`__attribute__((interrupt("machine")))` を付けた普通の C 関数で書けます
+(使用レジスタの退避と `mret` をコンパイラが生成します)。使用例は
+`examples/trap_demo.c` を参照してください。
+
+```c
+void __attribute__((interrupt("machine"))) trap_handler(void) { ... }
+write_csr(mtvec, (unsigned int)trap_handler);
+set_csr(mie, MIE_MTIE);
+set_csr(mstatus, MSTATUS_MIE);
+```
+
+> リセット直後の `mtvec` は 0 なので、ハンドラを設定する前にトラップが起きると
+> リセットベクタ (0番地) に戻ってプログラムが最初からやり直しになります。
 
 ## ディレクトリ構成
 
@@ -87,18 +170,23 @@ RISC_V_fpga/
 │   ├── alu.v                 # ALU
 │   ├── multiplier.v          # 多サイクル乗算器 (3サイクル)
 │   ├── divider.v             # 多サイクル除算器 (34サイクル)
+│   ├── csr_file.v            # CSR・トラップ状態・カウンタ
+│   ├── timer.v               # マシンタイマ / ソフトウェア割り込み (mtime, mtimecmp, msip)
 │   ├── data_memory.v         # データRAM 64KB (BSRAM)
 │   ├── uart_tx.v / uart_rx.v # UART (115200bps)
 │   ├── board_io.v            # LED / ボタンの MMIO
 │   ├── blinky.v              # LED点滅テスト (Phase 1)
 │   └── uart_*.s / uart_*.hex # 手書きアセンブリのテストプログラム
-├── sim/                      # テストベンチ (21本, tb_*.v)
+├── sim/                      # テストベンチ (23本, tb_*.v)
+│   └── trap_test.S / .hex    # tb_trap.v 用の CSR・例外・割り込み自己検査プログラム
 ├── examples/                 # C / アセンブリのサンプルとビルド済み hex
 │   ├── uart.h                # UART MMIO ヘルパ
+│   ├── csr.h                 # CSR アクセス・トラップ定数・タイマ操作
 │   ├── loop55.c / loop55.S   # 1+2+...+10 = 55 を LED で確認
 │   ├── button_led.c          # ボタンで LED を切り替え
 │   ├── uart_echo_c.c         # UART エコー
-│   └── printf_demo.c         # 10進/16進表示、.bss/.rodata、UART RX の総合デモ
+│   ├── printf_demo.c         # 10進/16進表示、.bss/.rodata、UART RX の総合デモ
+│   └── trap_demo.c           # 例外・タイマ割り込み・UART受信割り込みのデモ
 ├── tools/
 │   ├── crt0.S                # スタートアップ (.data コピー, .bss クリア)
 │   ├── link.ld               # リンカスクリプト (ROM 32KB / RAM 64KB)
@@ -245,12 +333,14 @@ PATH への追加コマンドもそのまま貼り付けられる形で表示し
 
 ### 5. ビルドして使う
 
-サンプルは 4 本あります。
+サンプルは 5 本あります。
 
 - `examples/loop55.c`: 1 から 10 までの加算結果 55 を LED で確認するサンプル
 - `examples/button_led.c`: `user_btn` で `led[1]` を切り替える MMIO サンプル
 - `examples/uart_echo_c.c`: 起動メッセージのあと UART 受信文字をエコーするサンプル
 - `examples/printf_demo.c`: 10進/16進表示、`.bss` / `.rodata`、UART RX まで確認する総合デモ
+- `examples/trap_demo.c`: ECALL と不正命令の例外、500ms ごとのタイマ割り込み (LED[1] 点滅)、
+  UART 受信割り込みのデモ
 
 > **`-march=rv32im -mabi=ilp32` は必須です。** 省略すると gcc の既定 multilib
 > (`rv32imac`) が選ばれ、本CPUが未実装の圧縮命令 (C拡張, 16ビット命令) を
@@ -285,6 +375,12 @@ riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -I
   tools/crt0.S examples/printf_demo.c -o examples/printf_demo.elf
 riscv64-unknown-elf-objcopy -O binary examples/printf_demo.elf examples/printf_demo.bin
 python tools/bin2hex.py examples/printf_demo.bin > examples/printf_demo.hex
+
+# trap_demo (CSR 命令を使うので -march に _zicsr が必要)
+riscv64-unknown-elf-gcc -march=rv32im_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link.ld \
+  tools/crt0.S examples/trap_demo.c -o examples/trap_demo.elf
+riscv64-unknown-elf-objcopy -O binary examples/trap_demo.elf examples/trap_demo.bin
+python tools/bin2hex.py examples/trap_demo.bin > examples/trap_demo.hex
 ```
 
 > `crt0.S` が `.data` の ROM→RAM コピーと `.bss` のゼロクリアを行うので、
@@ -300,6 +396,7 @@ python tools/bin2hex.py examples/printf_demo.bin > examples/printf_demo.hex
   - 起動確認だけなら `examples/loop55.hex`
   - ボタン/LED の MMIO 確認なら `examples/button_led.hex`
   - UART まで一通り動かすなら `examples/printf_demo.hex`
+  - 割り込みまで試すなら `examples/trap_demo.hex`
 2. `src/fpga_top.v` の `INIT_FILE` を使いたい hex に合わせます。
   - 既定値は `examples/loop55.hex` です。
   - `build.tcl` はここから hex のパスを読むので、変更箇所はこの1か所だけです。
@@ -348,6 +445,8 @@ powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Interactive -Sh
     (CPU が x1 = 55 を計算完了)
   - `button_led` : `user_btn` (S2) を押すたびに `led[1]` が反転
   - `printf_demo` / `uart_echo_c` : 115200bps のシリアル端末に出力
+  - `trap_demo` : 例外の報告のあと、`led[1]` が 500ms ごとに反転して `tick N` を出力。
+    送った文字は `rx 'X'` として返る
 
 > `tools/program.ps1` はビットストリームより新しい `src/*.v` があると警告します。
 > 合成し直さずに古いビットストリームを焼く事故を防ぐためです。

@@ -1,6 +1,7 @@
 src/alu.v
 src/board_io.v
 src/control_unit.v
+src/csr_file.v
 src/cpu_top.v
 src/data_memory.v
 src/fpga_top.v
@@ -8,6 +9,7 @@ src/imm_gen.v
 src/instruction_decoder.v
 src/instruction_memory.v
 src/register_file.v
+src/timer.v
 src/uart_tx.v
 sim/tb_alu.v
 sim/tb_alu_m.v

@@ -52,6 +52,7 @@ module tb_board_io;
         addr = 32'h8000_0024;
         read_en = 1;
         user_btn = 1;
+        @(posedge clk);   // read data is registered: valid one clock later
         #1;
         if (read_data[0] !== 1'b1) begin
             $display("FAIL: button MMIO read did not reflect user_btn");
