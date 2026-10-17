@@ -314,8 +314,8 @@ module cpu_top #(
     // =========================================================================
     // Memory Interface / Address Decoding Outputs
     // =========================================================================
-    // The implemented data RAM is 64 KB, so the valid scratch-memory region is
-    // 0x0001_0000 - 0x0001_FFFF.
+    // The data RAM is 32 KB (0x0001_0000 - 0x0001_7FFF). The decode still
+    // claims the whole 64 KB window, so 0x0001_8000 - 0x0001_FFFF aliases it.
     wire imem_sel = (alu_result < 32'h0000_8000);
     wire dmem_sel = (alu_result >= 32'h0001_0000) && (alu_result <= 32'h0001_FFFF);
     // MMIO: 0x8000_0010 = UART TX data register

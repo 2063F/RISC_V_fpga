@@ -95,6 +95,7 @@ module tb_board_io;
         addr = 32'h8000_002C;
         read_en = 1;
         kbd_col = 8'hDF; // ~(1<<5) & 0xFF
+        @(posedge clk);
         #1;
         if (read_data[7:0] !== 8'hDF) begin
             $display("FAIL: keyboard COL MMIO read did not reflect kbd_col");
@@ -136,6 +137,7 @@ module tb_board_io;
 
         addr = 32'h8000_0030;
         read_en = 1;
+        @(posedge clk);
         #1;
         if (read_data !== 32'hDEAD_BEEF) begin
             $display("FAIL: LED_GREEN_LO readback = %h", read_data);

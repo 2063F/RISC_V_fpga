@@ -172,7 +172,7 @@ RISC_V_fpga/
 │   ├── divider.v             # 多サイクル除算器 (34サイクル)
 │   ├── csr_file.v            # CSR・トラップ状態・カウンタ
 │   ├── timer.v               # マシンタイマ / ソフトウェア割り込み (mtime, mtimecmp, msip)
-│   ├── data_memory.v         # データRAM 64KB (BSRAM)
+│   ├── data_memory.v         # データRAM 32KB (BSRAM)
 │   ├── uart_tx.v / uart_rx.v # UART (115200bps)
 │   ├── board_io.v            # LED / ボタンの MMIO
 │   ├── blinky.v              # LED点滅テスト (Phase 1)
@@ -189,7 +189,7 @@ RISC_V_fpga/
 │   └── trap_demo.c           # 例外・タイマ割り込み・UART受信割り込みのデモ
 ├── tools/
 │   ├── crt0.S                # スタートアップ (.data コピー, .bss クリア)
-│   ├── link.ld               # リンカスクリプト (ROM 32KB / RAM 64KB)
+│   ├── link.ld               # リンカスクリプト (ROM 32KB / RAM 32KB)
 │   ├── bin2hex.py            # 生バイナリ -> $readmemh 用 hex
 │   ├── assemble_uart_*.py    # src/uart_*.hex を生成する手動アセンブラ
 │   ├── install_riscv_toolchain.ps1 # ツールチェーン検出・導入案内
@@ -335,7 +335,7 @@ PATH への追加コマンドもそのまま貼り付けられる形で表示し
 
 サンプルは 5 本あります。
 
-- `examples/loop55.c`: 1 から 10 までの加算結果 55 を LED で確認するサンプル
+- `examples/loop55.S`: 1 から 10 までの加算結果 55 を LED で確認するサンプル (`loop55.c` は参考用)
 - `examples/button_led.c`: `user_btn` で `led[1]` を切り替える MMIO サンプル
 - `examples/uart_echo_c.c`: 起動メッセージのあと UART 受信文字をエコーするサンプル
 - `examples/printf_demo.c`: 10進/16進表示、`.bss` / `.rodata`、UART RX まで確認する総合デモ
@@ -352,9 +352,9 @@ PATH への追加コマンドもそのまま貼り付けられる形で表示し
 > hex から丸ごと落ちます。
 
 ```powershell
-# loop55
-riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -T tools/link.ld \
-  tools/crt0.S examples/loop55.c -o examples/loop55.elf
+# loop55 (アセンブリ版が正。C 版は -O2 でループが消え x1 = 55 にならない)
+riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -nostdlib -nostartfiles -Ttext=0 \
+  examples/loop55.S -o examples/loop55.elf
 riscv64-unknown-elf-objcopy -O binary examples/loop55.elf examples/loop55.bin
 python tools/bin2hex.py examples/loop55.bin > examples/loop55.hex
 
@@ -385,7 +385,7 @@ python tools/bin2hex.py examples/trap_demo.bin > examples/trap_demo.hex
 
 > `crt0.S` が `.data` の ROM→RAM コピーと `.bss` のゼロクリアを行うので、
 > 初期値つきグローバル変数も通常どおり使えます。`link.ld` には ROM 32 KB /
-> RAM 64 KB を超えたらリンクエラーになる `ASSERT` を入れてあります。
+> RAM 32 KB を超えたらリンクエラーになる `ASSERT` を入れてあります。
 
 生成した `*.hex` はそのまま CPU の初期化ファイルとして使えます。
 たとえば `fpga_top` の `INIT_FILE` を `examples/loop55.hex` または `examples/button_led.hex` に変更してください。
