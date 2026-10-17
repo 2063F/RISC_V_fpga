@@ -8,7 +8,7 @@
 // Key differences from x86 ALU:
 //   - No flag registers (CF, ZF, SF, OF, PF, AF) — not needed!
 //   - Always 32-bit — no 8/16/32-bit size switching
-//   - Only 'zero' output needed for branch instructions
+//   - Only a 'zero' output (cpu_top's branches compare rs1/rs2 directly)
 //   - Much simpler: ~100 lines vs 357 lines for x86
 // =============================================================================
 
@@ -20,10 +20,10 @@ module alu (
     input  wire [4:0]  alu_op,   // Operation select (see riscv_defines.vh)
 
     output reg  [31:0] result,   // Operation result
-    output wire        zero      // 1 when result == 0 (used for branch)
+    output wire        zero      // 1 when result == 0
 );
 
-    // zero flag: used by BEQ/BNE branch logic in control unit
+    // zero flag: kept for tb_alu; the CPU's branches use control_unit's comparator
     assign zero = (result == 32'd0);
 
     always @(*) begin

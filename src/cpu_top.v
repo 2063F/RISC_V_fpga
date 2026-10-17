@@ -145,7 +145,6 @@ module cpu_top #(
     // =========================================================================
     wire [1:0]  pc_sel;
     wire [31:0] alu_result;
-    wire        alu_zero;
     reg  [31:0] reg_write_data;
     reg  [31:0] next_pc_temp;
 
@@ -520,8 +519,8 @@ module cpu_top #(
         .funct3     (ex_funct3),
         .branch     (ex_branch),
         .jump       (ex_jump),
-        .alu_zero   (alu_zero),
-        .alu_result (alu_result),
+        .rs1_data   (ex_rs1_data),
+        .rs2_data   (ex_rs2_data),
         .pc_sel     (pc_sel)
     );
 
@@ -531,7 +530,7 @@ module cpu_top #(
         .b      (ex_alu_b),
         .alu_op (ex_alu_op),
         .result (alu_result),
-        .zero   (alu_zero)
+        .zero   ()
     );
 
     // 6b. Multi-cycle Multiplier (RV32M MUL/MULH/MULHSU/MULHU)
