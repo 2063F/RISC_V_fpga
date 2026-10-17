@@ -26,7 +26,10 @@
 //                   waiting, bits 5:0 = key index (0 = a1, 1 = b1, ...
 //                   7 = h1, 8 = a2, ... 63 = h8). Reading does not consume
 //                   the event.
-//                 - write (any value): consume the event
+//                 - write (any value): consume the event. The pop reaches
+//                   usb_keyboard one clock after the store, so a read in
+//                   that clock reports no event (bit 8 = 0) rather than the
+//                   one being consumed; the next read sees the next event.
 //
 // read_data is registered: it answers the address one clock later. The CPU
 // samples external load data in the load's second (data) cycle with the
@@ -46,7 +49,7 @@ module board_io (
     input  wire        usbkey_valid,
     input  wire [5:0]  usbkey_index,
     input  wire        usbkey_connected,
-    output wire        usbkey_pop,
+    output reg         usbkey_pop,
     output reg  [31:0] read_data,
     output reg         led_ctrl,
     output reg  [7:0]  kbd_row,
@@ -64,8 +67,16 @@ module board_io (
     localparam [31:0] LED_RED_HI_ADDR   = 32'h8000_003C;
     localparam [31:0] USBKEY_ADDR       = 32'h8000_0040;
 
-    // Stores never stall in the CPU, so write_en is a single-cycle pulse
-    assign usbkey_pop = write_en && (addr == USBKEY_ADDR);
+    // Stores never stall in the CPU, so write_en is a single-cycle pulse.
+    // The pop is registered: combinational, it ran from the CPU's address
+    // adder straight into usb_keyboard's 64-bit pending update and was the
+    // critical path.
+    always @(posedge clk) begin
+        if (!rst_n)
+            usbkey_pop <= 1'b0;
+        else
+            usbkey_pop <= write_en && (addr == USBKEY_ADDR);
+    end
 
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -107,7 +118,8 @@ module board_io (
                 LED_GREEN_HI_ADDR: read_data <= led_green_bitmap[63:32];
                 LED_RED_LO_ADDR:   read_data <= led_red_bitmap[31:0];
                 LED_RED_HI_ADDR:   read_data <= led_red_bitmap[63:32];
-                USBKEY_ADDR:       read_data <= {22'd0, usbkey_connected, usbkey_valid, 2'd0, usbkey_index};
+                USBKEY_ADDR:       read_data <= {22'd0, usbkey_connected, usbkey_valid && !usbkey_pop,
+                                                 2'd0, usbkey_index};
                 default:           read_data <= 32'd0;
             endcase
         end
