@@ -43,9 +43,18 @@ if {![file exists $src_hex]} {
     error "ROM image not found: $src_hex - build it first (see README)"
 }
 
-file mkdir [file join [pwd] examples]
-file copy -force $src_hex [file join [pwd] $init_hex]
-puts "Staged ROM image: [file join [pwd] $init_hex]"
+set staged_hex [file join [pwd] $init_hex]
+file mkdir [file dirname $staged_hex]
+file copy -force $src_hex $staged_hex
+puts "Staged ROM image: $staged_hex"
+
+# usb_hid_host's microcode ROM is loaded the same way (path relative to the
+# repository root), so stage it next to the project too.
+set usb_rom "src/usb_hid_host/usb_hid_host_rom.hex"
+set staged_usb_rom [file join [pwd] $usb_rom]
+file mkdir [file dirname $staged_usb_rom]
+file copy -force [file join $root_dir $usb_rom] $staged_usb_rom
+puts "Staged USB host ROM: $staged_usb_rom"
 
 # Set Top Module and options
 set_option -top_module fpga_top

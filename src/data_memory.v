@@ -3,12 +3,12 @@
 // Module Name: data_memory
 // Project Name: RISC-V RV32IM CPU
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
-// Description: 64 KB scratch RAM (0x0001_0000 - 0x0001_FFFF) supporting byte,
+// Description: 32 KB scratch RAM (0x0001_0000 - 0x0001_7FFF) supporting byte,
 //              halfword and word access.
 //
 // Why this module looks the way it does
 // -------------------------------------
-// The RAM has to land in BSRAM; there is no other way to fit 64 KB on this
+// The RAM has to land in BSRAM; there is no other way to fit 32 KB on this
 // device. Two things are needed for GowinSynthesis to infer it, both verified
 // by running the real flow:
 //
@@ -40,11 +40,16 @@ module data_memory (
     output reg  [31:0] read_data      // Read data, valid one cycle after addr/read_en
 );
 
-    localparam integer WORDS = 16384; // 16384 words = 64 KB
+    // 16384 words (64 KB) would need 32 BSRAM for this RAM alone; combined
+    // with instruction_memory's ROM that can exceed the device's BSRAM count
+    // once the ROM is densely packed (see instruction_memory.v). Halved to
+    // 8192 words (32 KB) to leave headroom - no example program here comes
+    // close to using that much RAM.
+    localparam integer WORDS = 8192; // 8192 words = 32 KB
 
-    // Only 0x0001_0000 - 0x0001_FFFF is implemented.
-    wire        addr_valid  = (addr >= 32'h0001_0000) && (addr <= 32'h0001_FFFF);
-    wire [13:0] word_addr   = addr[15:2];
+    // Only 0x0001_0000 - 0x0001_7FFF is implemented.
+    wire        addr_valid  = (addr >= 32'h0001_0000) && (addr <= 32'h0001_7FFF);
+    wire [12:0] word_addr   = addr[14:2];
     wire [1:0]  byte_offset = addr[1:0];
 
     // =========================================================================

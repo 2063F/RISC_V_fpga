@@ -4,7 +4,42 @@
 # 使い方:
 #   powershell -ExecutionPolicy Bypass -File tools/install_riscv_toolchain.ps1
 #
-# 本プロジェクトは RV32IM (圧縮命令なし) の bare-metal ツールチェーンを使います。
+# 本プロジェクトは RV32IM (圧縮命令なし) の ba
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+re-metal ツールチェーンを使います。
 # ツール名の接頭辞は配布元によって異なり、どちらでもビルドできます:
 #   - riscv-none-elf-*        (xPack 版。xpm で入る)
 #   - riscv64-unknown-elf-*   (SiFive / crosstool-NG 系の一般的な名前)

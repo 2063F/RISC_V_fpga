@@ -54,6 +54,10 @@ function Show-Chunk {
 $sp = New-Object System.IO.Ports.SerialPort $Port, $Baud, 'None', 8, 'One'
 $sp.ReadTimeout  = 200
 $sp.WriteTimeout = 1000
+# 既定の ASCII だと 0x80 以上のバイトが '?' になる。オセロの盤面表示は合法手に
+# UTF-8 の「〇」(E3 80 87) を使うので UTF-8 で読む。SerialPort は読み込みを
+# またいでデコーダの状態を保つため、3バイトが別々の chunk に分かれても化けない。
+$sp.Encoding = [System.Text.Encoding]::UTF8
 # DTR/RTS はボードのリセットに配線されていることがあるので既定のまま触らない。
 
 try {

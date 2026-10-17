@@ -11,3 +11,4 @@ sim/*.out
 
 # ROM image staged next to the Gowin project by build.tcl
 gowin_project/*/examples/
+gowin_project/*/src/

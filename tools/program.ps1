@@ -27,13 +27,17 @@ $device = 'GW5A-25A'
 
 # programmer_cli --run の番号:
 #   2 = SRAM Program, 4 = SRAM Program and Verify
-#   8 = exFlash Erase,Program, 9 = exFlash Erase,Program,Verify
+#   54 = exFlash Erase,Program,Verify Arora V
 #
 # SRAM は verify 無し (2) を使う。GW5A-25A で 4 を試すと書き込み自体は通るのに
 # 読み戻しで "Error: Verify failed of at 0" になる。この系列は SRAM の
 # リードバックが既定で無効なため、verify の失敗は書き込み失敗を意味しない。
 # 実機で 2 を使って正常に動作することを確認済み。
-$operation = if ($Flash) { 9 } else { 2 }
+#
+# フラッシュは Arora V (GW5A) 専用の 54 を使う。汎用の 9 では
+# "Error: spi flash not found" で失敗し、その後ボードを抜き差しするまで
+# JTAG からデバイスが見えなくなった。54 での書き込み・verify は実機で確認済み。
+$operation = if ($Flash) { 54 } else { 2 }
 
 # -----------------------------------------------------------------------------
 # programmer_cli の呼び出し
