@@ -65,15 +65,18 @@ set_option -use_done_as_gpio 1
 set_option -use_cpu_as_gpio 1
 
 # Place & Route effort. Most of the remaining delay on the 50 MHz paths is
-# routing (~80% on the worst ones), so timing-driven placement/routing and
-# duplicating high-fanout drivers help more than further logic changes.
-# 0 is the tool default for both; set them back to 0 to compare.
-#   place_option : 0 = default, 1 = timing-driven (2-4: other strategies)
-#   route_option : 0 = default, 1 = timing-driven (2: other strategy)
-#   replicate_resources : duplicate high-fanout registers to cut long nets
-set_option -place_option 1
-set_option -route_option 1
-set_option -replicate_resources 1
+# routing (~70-80% on the worst ones), so timing-driven placement/routing and
+# duplicating high-fanout drivers might help - or might just move the worst
+# path somewhere else. pnr_timing_driven switches all three together so the
+# two settings can be compared on the same RTL:
+#   0 : tool defaults (place_option 0, route_option 0, no replication)
+#   1 : place_option 1 / route_option 1 (timing-driven), replicate_resources
+# With 1 the CPU's branch -> flush path came out ~2 ns worse than the run
+# before it, so 0 is the default until a comparison says otherwise.
+set pnr_timing_driven 0
+set_option -place_option $pnr_timing_driven
+set_option -route_option $pnr_timing_driven
+set_option -replicate_resources $pnr_timing_driven
 
 # Run Synthesis
 run syn
