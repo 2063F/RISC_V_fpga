@@ -162,8 +162,14 @@ module csr_file (
     // Update
     // =========================================================================
     // trap, mret and we are mutually exclusive (cpu_top only asserts one of
-    // them per cycle). The counters run underneath; an explicit write to one
-    // of them comes later in the block and wins.
+    // them per cycle). Only mstatus, mepc, mcause and mtval are written by a
+    // trap or mret, so only they sit behind the trap/mret priority chain. The
+    // other CSRs take instruction writes straight from we: the trap decision
+    // comes off the branch compare at the end of EX, and putting it in front
+    // of every write enable made it the critical path.
+    //
+    // The counters run underneath; an explicit write to one of them comes
+    // later in the block and wins.
     always @(posedge clk) begin
         if (!rst_n) begin
             mstatus_mie    <= 1'b0;
@@ -201,6 +207,18 @@ module csr_file (
                         mstatus_mie  <= wdata[3];
                         mstatus_mpie <= wdata[7];
                     end
+                    `CSR_MEPC:      mepc_word       <= wdata[31:2];
+                    `CSR_MCAUSE: begin
+                        mcause_irq  <= wdata[31];
+                        mcause_code <= wdata[3:0];
+                    end
+                    `CSR_MTVAL:     mtval           <= wdata;
+                    default: ;
+                endcase
+            end
+
+            if (we) begin
+                case (addr)
                     `CSR_MIE: begin
                         mie_msie <= wdata[3];
                         mie_mtie <= wdata[7];
@@ -211,17 +229,11 @@ module csr_file (
                         mtvec_vectored <= (wdata[1:0] == 2'b01);
                     end
                     `CSR_MSCRATCH:  mscratch        <= wdata;
-                    `CSR_MEPC:      mepc_word       <= wdata[31:2];
-                    `CSR_MCAUSE: begin
-                        mcause_irq  <= wdata[31];
-                        mcause_code <= wdata[3:0];
-                    end
-                    `CSR_MTVAL:     mtval           <= wdata;
                     `CSR_MCYCLE:    mcycle[31:0]    <= wdata;
                     `CSR_MCYCLEH:   mcycle[63:32]   <= wdata;
                     `CSR_MINSTRET:  minstret[31:0]  <= wdata;
                     `CSR_MINSTRETH: minstret[63:32] <= wdata;
-                    default: ;  // misa, mip, mstatush: writes ignored
+                    default: ;  // misa, mip, mstatush: writes ignored; the rest are above
                 endcase
             end
         end
