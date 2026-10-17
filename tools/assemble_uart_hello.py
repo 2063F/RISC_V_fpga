@@ -1,5 +1,5 @@
 """
-uart_hello.py  -  手動アセンブラ (RISC-V RV32I)
+assemble_uart_hello.py  -  手動アセンブラ (RISC-V RV32I)
 "Hello, RISC-V!\r\n" をUART MMIO 0x8000_0010 へ繰り返し送信するプログラムを生成する。
 
 レジスタ割当:

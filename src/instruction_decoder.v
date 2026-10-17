@@ -1,5 +1,5 @@
 // =============================================================================
-// instruction_decoder.v - Instruction Decoder for RISC-V RV32I CPU
+// instruction_decoder.v - Instruction Decoder for RISC-V RV32IM CPU
 // =============================================================================
 // Decodes the 32-bit instruction into control signals for the datapath.
 // Extremely simple compared to x86 due to fixed length and format.
@@ -127,12 +127,12 @@ module instruction_decoder (
             // Add Upper Immediate to PC (AUIPC)
             // ------------------------------------------------------------------
             `OP_AUIPC: begin
-                // In single cycle CPU, this will be handled by passing PC to ALU A input
-                // For now, just generate the immediate
+                // control_unit switches ALU input A to the PC for AUIPC, so
+                // the ADD below computes PC + imm.
                 reg_write = 1'b1;
                 imm_type  = `IMM_U;
                 alu_src_b = 1'b1;
-                alu_op    = `ALU_ADD; // Actually PC + imm
+                alu_op    = `ALU_ADD; // PC + imm
                 wb_sel    = 2'd0;
             end
 
@@ -197,7 +197,9 @@ module instruction_decoder (
             end
 
             default: begin
-                // Unhandled or invalid opcode
+                // Unhandled or invalid opcode (FENCE, ECALL, EBREAK, CSR*,
+                // compressed instructions, ...). The defaults above make it a
+                // no-op: nothing is written and no exception is raised.
             end
         endcase
     end

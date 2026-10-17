@@ -1,5 +1,5 @@
 // =============================================================================
-// alu.v - 32-bit ALU for RISC-V RV32I CPU
+// alu.v - 32-bit ALU for RISC-V RV32IM CPU
 // =============================================================================
 // Operations: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU.
 // The RV32M multiply and divide live in multiplier.v and divider.v, which are

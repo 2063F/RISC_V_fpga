@@ -6,7 +6,7 @@
 // Create Date: 2026/05/23
 // Design Name: 
 // Module Name: tb_cpu_top
-// Project Name: RISK-V RV32I CPU
+// Project Name: RISC-V RV32IM CPU
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
 // Tool Versions: 
 // Description: Testbench for the top level RISC-V CPU.
