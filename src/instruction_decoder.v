@@ -101,7 +101,16 @@ module instruction_decoder (
                 wb_sel    = 2'd0;
                 case (funct3)
                     `FUNCT3_ADD_SUB: alu_op = `ALU_ADD; // ADDI is always ADD
-                    `FUNCT3_SLL:     alu_op = `ALU_SLL;
+                    // CTZ / CPOP (Zbb) share this funct3 with SLLI and are
+                    // told apart by funct7, with the rs2 field picking the op.
+                    `FUNCT3_SLL: begin
+                        if (funct7 == `FUNCT7_ZBB_UN && rs2 == `ZBB_UN_CTZ)
+                            alu_op = `ALU_CTZ;
+                        else if (funct7 == `FUNCT7_ZBB_UN && rs2 == `ZBB_UN_CPOP)
+                            alu_op = `ALU_CPOP;
+                        else
+                            alu_op = `ALU_SLL;
+                    end
                     `FUNCT3_SLT:     alu_op = `ALU_SLT;
                     `FUNCT3_SLTU:    alu_op = `ALU_SLTU;
                     `FUNCT3_XOR:     alu_op = `ALU_XOR;

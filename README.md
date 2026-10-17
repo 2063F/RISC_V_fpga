@@ -12,11 +12,12 @@ RV32I 命令セットを段階的に実装し、シングルサイクルCPU か�
 
 - RV32I の基本演算、即値演算、分岐、ジャンプ、ロード/ストアを実装済み
 - RV32M の乗算・除算命令を実装済み (多サイクル: 乗算3サイクル / 除算34サイクル)
+- Zbb の `cpop` / `ctz` を実装済み (1サイクル。Zbb の他の命令は未実装)
 - Scratch RAM と UART TX/RX の MMIO を接続済み
 - 3段パイプライン化（フェッチ / デコード+レジスタ読み出し / 実行+書き戻し）
 - EX から ID へのフォワーディングでデータハザードを解決
 - 命令ROM・データRAM を BSRAM に配置 (ロード時1サイクルストール)
-- `sim/` の全テストベンチ (21本) がパスする状態
+- `sim/` の全テストベンチ (23本) がパスする状態
 - Tang Primer 25K で合成・配置配線が通り、50 MHz 制約を満たす
 - **実機 (Tang Primer 25K) で動作確認済み**
   - `loop55` : LED[0] のハートビートと LED[1] 点灯 (x1 = 55 到達)
@@ -44,6 +45,15 @@ RV32I 命令セットを段階的に実装し、シングルサイクルCPU か�
 > **注意: 本CPUは RV32IM のみで、C拡張 (圧縮命令) は未実装です。**
 > C をビルドするときは必ず `-march=rv32im -mabi=ilp32` を指定してください。
 
+> **Zbb は `cpop` / `ctz` の2命令だけです。** `-march=rv32im_zbb` にすると gcc が
+> 未実装の `clz` / `andn` / `rol` なども出すので使えません。`-march=rv32im` のまま
+> `examples/zbb.h` の `zbb_cpop32` / `zbb_ctz32` / `zbb_cpop64` / `zbb_ctz64` を
+> 呼んでください (`.insn` で直接エンコードしています)。
+>
+> 上の実測値は Zbb 追加前のものです。追加後は未合成のため、Gowin で再合成して
+> 50 MHz を満たすか確認してください (結果は書き戻し側にだけ繋いでおり、
+> アドレス・分岐判定のパスには入れていません)。
+
 ## 開発ロードマップ
 
 | Phase | 内容 | 状態 |
@@ -63,7 +73,7 @@ RV32I 命令セットを段階的に実装し、シングルサイクルCPU か�
 - **ベース**: RV32I (RISC-V Base Integer Instruction Set, 32-bit)
 - **レジスタ**: 32本 × 32ビット (x0 = 常に0)
 - **命令長**: 固定 32ビット
-- **命令数**: 40
+- **命令数**: 40 + RV32M 8 + Zbb 2 (`cpop`, `ctz`)
 
 ## ディレクトリ構成
 
@@ -73,6 +83,7 @@ RISK_V_fpga/
 │   ├── riscv_defines.vh      # 共通定義 (唯一の定義元。sim からは -I src で参照)
 │   ├── multiplier.v          # 多サイクル乗算器 (Phase 7)
 │   ├── divider.v             # 多サイクル除算器 (Phase 7)
+│   ├── bitmanip.v            # Zbb cpop / ctz
 │   ├── blinky.v              # LED点滅テスト (Phase 1)
 │   ├── alu.v                 # ALU (Phase 2)
 │   ├── register_file.v       # レジスタファイル (Phase 2)
@@ -84,6 +95,8 @@ RISK_V_fpga/
 │   ├── tb_shift_logic.v      # シフト/論理/比較命令のCPU統合テスト
 │   ├── tb_multiplier.v       # 多サイクル乗算器の単体テスト
 │   ├── tb_divider.v          # 多サイクル除算器の単体テスト
+│   ├── tb_bitmanip.v         # cpop / ctz の単体テスト
+│   ├── tb_zbb.v              # cpop / ctz のCPU統合テスト
 │   ├── tb_hazard.v           # データハザード/フォワーディングの検証
 │   └── tb_cpu_top.v
 ├── constraints/              # FPGA制約ファイル
@@ -247,6 +260,12 @@ riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -I
   tools/crt0.S examples/uart_echo_c.c -o examples/uart_echo_c.elf
 riscv64-unknown-elf-objcopy -O binary examples/uart_echo_c.elf examples/uart_echo_c.bin
 python tools/bin2hex.py examples/uart_echo_c.bin > examples/uart_echo_c.hex
+
+# zbb_demo (cpop / ctz の動作確認。zbb.h を使う)
+riscv64-unknown-elf-gcc -march=rv32im -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link.ld \
+  tools/crt0.S examples/zbb_demo.c -o examples/zbb_demo.elf
+riscv64-unknown-elf-objcopy -O binary examples/zbb_demo.elf examples/zbb_demo.bin
+python tools/bin2hex.py examples/zbb_demo.bin > examples/zbb_demo.hex
 ```
 
 > `crt0.S` が `.data` の ROM→RAM コピーと `.bss` のゼロクリアを行うので、

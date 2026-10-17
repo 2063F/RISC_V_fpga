@@ -27,7 +27,8 @@
 //
 // Dependencies: riscv_defines.vh, instruction_memory.v, instruction_decoder.v,
 //               imm_gen.v, register_file.v, control_unit.v, alu.v,
-//               multiplier.v, divider.v, data_memory.v, uart_tx.v, uart_rx.v
+//               multiplier.v, divider.v, bitmanip.v, data_memory.v,
+//               uart_tx.v, uart_rx.v
 //////////////////////////////////////////////////////////////////////////////////
 
 `include "riscv_defines.vh"
@@ -350,11 +351,23 @@ module cpu_top #(
         .done      (div_done)
     );
 
+    // 6d. Zbb CPOP / CTZ (single cycle, combinational)
+    wire is_bitcnt = (ex_alu_op == `ALU_CPOP) || (ex_alu_op == `ALU_CTZ);
+    wire [31:0] bitcnt_result;
+
+    bitmanip bitcnt_unit (
+        .a      (ex_rs1_data),
+        .is_ctz (ex_alu_op == `ALU_CTZ),
+        .result (bitcnt_result)
+    );
+
     // Write-back value for ALU-class instructions. alu_result itself still
-    // drives address decoding and the branch comparison, which multiplies and
-    // divides never use, so only the register write-back needs these answers.
-    wire [31:0] exec_result = is_div ? div_result :
-                              is_mul ? mul_result : alu_result;
+    // drives address decoding and the branch comparison, which multiplies,
+    // divides and the bit counts never use, so only the register write-back
+    // needs these answers.
+    wire [31:0] exec_result = is_div    ? div_result    :
+                              is_mul    ? mul_result    :
+                              is_bitcnt ? bitcnt_result : alu_result;
 
     // 7. Internal Data Memory (RAM)
     wire [31:0] internal_mem_read_data;

@@ -39,6 +39,8 @@
 `define ALU_DIVU    5'd16   // divu
 `define ALU_REM     5'd17   // rem
 `define ALU_REMU    5'd18   // remu
+`define ALU_CPOP    5'd19   // cpop (Zbb)
+`define ALU_CTZ     5'd20   // ctz  (Zbb)
 
 
 
@@ -79,6 +81,7 @@
 `define FUNCT7_NORMAL  7'b0000000   // ADD, SRL
 `define FUNCT7_ALT     7'b0100000   // SUB, SRA
 `define FUNCT7_MEXT    7'b0000001   // RV32M Extension
+`define FUNCT7_ZBB_UN  7'b0110000   // Zbb unary ops (CLZ/CTZ/CPOP, rs2 field picks)
 
 // =========================================================================
 // funct3 for RV32M instructions
@@ -91,6 +94,12 @@
 `define FUNCT3_DIVU     3'b101
 `define FUNCT3_REM      3'b110
 `define FUNCT3_REMU     3'b111
+
+// =========================================================================
+// rs2 field (inst[24:20]) of the Zbb unary ops, OP-IMM / funct3 = 001
+// =========================================================================
+`define ZBB_UN_CTZ   5'b00001
+`define ZBB_UN_CPOP  5'b00010
 
 // =========================================================================
 // Immediate type encoding (for immediate generator)
