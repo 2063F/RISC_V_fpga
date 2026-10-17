@@ -118,11 +118,11 @@ module cpu_top #(
     // =========================================================================
     reg  [31:0] ex_pc;
     reg  [31:0] ex_rs1_data, ex_rs2_data;
+    reg  [31:0] ex_alu_a, ex_alu_b;  // ALU operands, already selected in ID
     reg  [31:0] ex_imm;
     reg  [4:0]  ex_rd;
     reg  [4:0]  ex_alu_op;
     reg         ex_reg_write;
-    reg         ex_alu_src_b;
     reg         ex_branch, ex_jump;
     reg         ex_mem_read, ex_mem_write;
     reg  [1:0]  ex_wb_sel;
@@ -143,9 +143,7 @@ module cpu_top #(
     // =========================================================================
     // Stage 3: Execute / Memory / Write-back
     // =========================================================================
-    wire        alu_src_a;
     wire [1:0]  pc_sel;
-    reg  [31:0] alu_in_a, alu_in_b;
     wire [31:0] alu_result;
     wire        alu_zero;
     reg  [31:0] reg_write_data;
@@ -292,6 +290,22 @@ module cpu_top #(
     wire [31:0] id_rs1_data = fwd_rs1 ? reg_write_data : rf_rd1;
     wire [31:0] id_rs2_data = fwd_rs2 ? reg_write_data : rf_rd2;
 
+    // ALU operands are chosen here rather than in EX: A is the PC for AUIPC and
+    // rs1 otherwise, B is the immediate or rs2. Done in EX, that mux sat between
+    // the ID/EX register and the ALU adder on every ALU path, behind a select
+    // line fanning out to 64 bits. Here it comes off the decode instead.
+    //
+    // reg_write_data is the late arrival (it is the end of the EX path), so it
+    // is kept to a single mux level: the forward select is folded with the
+    // operand select, and everything else is muxed beforehand.
+    wire        id_is_auipc = (id_inst[6:0] == `OP_AUIPC);
+    wire        fwd_alu_a   = fwd_rs1 && !id_is_auipc;
+    wire        fwd_alu_b   = fwd_rs2 && !id_alu_src_b;
+    wire [31:0] id_alu_a_rf = id_is_auipc  ? ifid_pc : rf_rd1;
+    wire [31:0] id_alu_b_rf = id_alu_src_b ? id_imm  : rf_rd2;
+    wire [31:0] id_alu_a    = fwd_alu_a ? reg_write_data : id_alu_a_rf;
+    wire [31:0] id_alu_b    = fwd_alu_b ? reg_write_data : id_alu_b_rf;
+
     // =========================================================================
     // Debug assignment
     // =========================================================================
@@ -317,6 +331,27 @@ module cpu_top #(
     wire mmio_sel              = mmio_uart_tx_sel || mmio_uart_stat_sel ||
                                  mmio_uart_rx_sel || mmio_uart_rx_stat_sel ||
                                  mmio_timer_sel;
+
+    // Load data is used one cycle after the address is formed (the load's data
+    // cycle), and EX is frozen in between, so the address decode can be
+    // registered in the first cycle and the load-data mux driven from the
+    // registers. That takes the ALU adder and the 32-bit address compares off
+    // the path into reg_write_data, which was the critical path of the design.
+    // Nothing reads selected_mem_data in a load's first cycle (the write-back
+    // waits for the data cycle), so these can simply register every cycle.
+    reg       ld_dmem_q, ld_imem_q;
+    reg       ld_uart_stat_q, ld_uart_rx_q, ld_uart_rx_stat_q, ld_timer_q;
+    reg [1:0] ld_offset_q;
+
+    always @(posedge clk) begin
+        ld_dmem_q         <= dmem_sel;
+        ld_imem_q         <= imem_sel;
+        ld_uart_stat_q    <= mmio_uart_stat_sel;
+        ld_uart_rx_q      <= mmio_uart_rx_sel;
+        ld_uart_rx_stat_q <= mmio_uart_rx_stat_sel;
+        ld_timer_q        <= mmio_timer_sel;
+        ld_offset_q       <= alu_result[1:0];
+    end
 
     // A trapping store is cancelled before it reaches any memory or device.
     wire ex_store = ex_valid && ex_mem_write && !trap_early;
@@ -485,14 +520,13 @@ module cpu_top #(
         .jump       (ex_jump),
         .alu_zero   (alu_zero),
         .alu_result (alu_result),
-        .alu_src_a  (alu_src_a),
         .pc_sel     (pc_sel)
     );
 
     // 6. ALU (EX)
     alu alu_inst (
-        .a      (alu_in_a),
-        .b      (alu_in_b),
+        .a      (ex_alu_a),
+        .b      (ex_alu_b),
         .alu_op (ex_alu_op),
         .result (alu_result),
         .zero   (alu_zero)
@@ -546,26 +580,14 @@ module cpu_top #(
     // Datapath Multiplexers (EX)
     // =========================================================================
 
-    // ALU Operand A: PC for AUIPC, rs1 otherwise
-    always @(*) begin
-        if (alu_src_a) alu_in_a = ex_pc;
-        else           alu_in_a = ex_rs1_data;
-    end
-
-    // ALU Operand B: immediate or rs2
-    always @(*) begin
-        if (ex_alu_src_b) alu_in_b = ex_imm;
-        else              alu_in_b = ex_rs2_data;
-    end
-
-    // Load data select
+    // Load data select (registered address decode, see above)
     reg  [31:0] selected_mem_data;
-    wire [1:0]  mem_byte_offset = alu_result[1:0];
+    wire [1:0]  mem_byte_offset = ld_offset_q;
 
     always @(*) begin
-        if (dmem_sel) begin
+        if (ld_dmem_q) begin
             selected_mem_data = internal_mem_read_data;
-        end else if (imem_sel) begin
+        end else if (ld_imem_q) begin
             // Byte/halfword selection for .rodata loads (LBU, LB, LHU, LH, LW)
             case (ex_funct3)
                 3'b000: begin // LB - signed byte
@@ -598,13 +620,13 @@ module cpu_top #(
                 end
                 default: selected_mem_data = rom_data_read; // LW
             endcase
-        end else if (mmio_uart_stat_sel) begin
+        end else if (ld_uart_stat_q) begin
             selected_mem_data = {31'd0, uart_busy};
-        end else if (mmio_uart_rx_sel) begin
+        end else if (ld_uart_rx_q) begin
             selected_mem_data = {24'd0, uart_rx_data};
-        end else if (mmio_uart_rx_stat_sel) begin
+        end else if (ld_uart_rx_stat_q) begin
             selected_mem_data = {31'd0, uart_rx_ready};
-        end else if (mmio_timer_sel) begin
+        end else if (ld_timer_q) begin
             selected_mem_data = timer_read_data;
         end else begin
             selected_mem_data = mem_read_data;
@@ -658,11 +680,12 @@ module cpu_top #(
             ex_pc          <= 32'd0;
             ex_rs1_data    <= 32'd0;
             ex_rs2_data    <= 32'd0;
+            ex_alu_a       <= 32'd0;
+            ex_alu_b       <= 32'd0;
             ex_imm         <= 32'd0;
             ex_rd          <= 5'd0;
             ex_alu_op      <= `ALU_ADD;
             ex_reg_write   <= 1'b0;
-            ex_alu_src_b   <= 1'b0;
             ex_branch      <= 1'b0;
             ex_jump        <= 1'b0;
             ex_mem_read    <= 1'b0;
@@ -706,11 +729,12 @@ module cpu_top #(
                 ex_pc        <= ifid_pc;
                 ex_rs1_data  <= id_rs1_data;
                 ex_rs2_data  <= id_rs2_data;
+                ex_alu_a     <= id_alu_a;
+                ex_alu_b     <= id_alu_b;
                 ex_imm       <= id_imm;
                 ex_rd        <= id_rd;
                 ex_alu_op    <= id_alu_op;
                 ex_reg_write <= id_reg_write;
-                ex_alu_src_b <= id_alu_src_b;
                 ex_branch    <= id_branch;
                 ex_jump      <= id_jump;
                 ex_mem_read  <= id_mem_read;

@@ -2,6 +2,9 @@
 // =============================================================================
 // timer.v - Machine timer and software interrupt (a minimal CLINT)
 // =============================================================================
+// Reads are registered like the BSRAMs: the data for an address appears one
+// clock later, which the CPU's one-cycle load stall already allows for.
+//
 // Memory map (word access only):
 //   0x8000_0100 : msip      bit 0 drives the machine software interrupt
 //   0x8000_0108 : mtimecmp  low word
@@ -29,7 +32,7 @@ module timer #(
     input  wire [31:0] write_data,
     input  wire        write_en,
     output wire        sel,         // addr falls in the timer's window
-    output reg  [31:0] read_data,
+    output reg  [31:0] read_data,   // valid one clock after addr
 
     output reg  [63:0] mtime,
     output reg         irq_timer,
@@ -79,14 +82,14 @@ module timer #(
         end
     end
 
-    always @(*) begin
+    always @(posedge clk) begin
         case (addr)
-            MSIP_ADDR:      read_data = {31'd0, irq_soft};
-            MTIMECMP_ADDR:  read_data = mtimecmp[31:0];
-            MTIMECMPH_ADDR: read_data = mtimecmp[63:32];
-            MTIME_ADDR:     read_data = mtime[31:0];
-            MTIMEH_ADDR:    read_data = mtime[63:32];
-            default:        read_data = 32'd0;
+            MSIP_ADDR:      read_data <= {31'd0, irq_soft};
+            MTIMECMP_ADDR:  read_data <= mtimecmp[31:0];
+            MTIMECMPH_ADDR: read_data <= mtimecmp[63:32];
+            MTIME_ADDR:     read_data <= mtime[31:0];
+            MTIMEH_ADDR:    read_data <= mtime[63:32];
+            default:        read_data <= 32'd0;
         endcase
     end
 

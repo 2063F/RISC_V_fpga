@@ -10,9 +10,9 @@
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
 // Tool Versions: 
 // Description: Control Unit for the EX stage of the pipelined RISC-V CPU.
-//              Generates control signals for program counter multiplexers
-//              and ALU input A multiplexers based on instructions and flags.
-//              Branches and jumps are resolved here, in EX.
+//              Generates the program counter select from the instruction and
+//              the ALU flags. Branches and jumps are resolved here, in EX.
+//              (The ALU operand selects are made in ID; see cpu_top.)
 // 
 // Dependencies: riscv_defines.vh
 // 
@@ -37,7 +37,6 @@ module control_unit (
     input  wire [31:0] alu_result,
     
     // Outputs to Datapath MUXs
-    output reg         alu_src_a, // 0: rs1, 1: PC (for AUIPC)
     output reg  [1:0]  pc_sel     // 0: PC+4, 1: PC+imm (Branch taken / JAL), 2: rs1+imm (JALR)
 );
 
@@ -61,15 +60,6 @@ module control_unit (
 
     // Datapath Multiplexer Control
     always @(*) begin
-        // ALU Input A Source Select:
-        // - AUIPC needs PC as the first operand.
-        // - Other instructions (R-type, I-type, Load, Store) use rs1.
-        if (opcode == `OP_AUIPC) begin
-            alu_src_a = 1'b1; // PC
-        end else begin
-            alu_src_a = 1'b0; // rs1
-        end
-
         // Next PC Source Select:
         // - 0: PC + 4 (Normal execution)
         // - 1: PC + imm (JAL or taken Branch)

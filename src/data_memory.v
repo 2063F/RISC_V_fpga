@@ -37,7 +37,7 @@ module data_memory (
     input  wire        write_en,      // Write enable
     input  wire        read_en,       // Read enable
     input  wire [2:0]  funct3,        // Access size and extension type
-    output reg  [31:0] read_data      // Read data, valid one cycle after addr
+    output reg  [31:0] read_data      // Read data, valid one cycle after addr/read_en
 );
 
     localparam integer WORDS = 16384; // 16384 words = 64 KB
@@ -106,35 +106,46 @@ module data_memory (
 
     wire [31:0] raw_data = {q3, q2, q1, q0};
 
+    // The byte offset and the valid check are registered alongside the data
+    // word, so the size/sign extension below never waits on addr - which is the
+    // ALU result, and was part of the critical path when it was used directly.
+    reg [1:0] q_offset;
+    reg       q_valid;
+
+    always @(posedge clk) begin
+        q_offset <= byte_offset;
+        q_valid  <= read_en && addr_valid;
+    end
+
     // =========================================================================
     // Size / sign extension
     // =========================================================================
-    // Combinational, applied to the registered word. The CPU holds addr, funct3
-    // and read_en steady across the load's stall cycle, so these are still the
-    // load's own control signals when raw_data becomes valid.
+    // Combinational, applied to the registered word. funct3 comes straight
+    // from the CPU's ID/EX register, which holds it across the load's stall
+    // cycle.
     always @(*) begin
-        if (!read_en || !addr_valid) begin
+        if (!q_valid) begin
             read_data = 32'd0;
         end else begin
             case (funct3)
                 `FUNCT3_WORD: read_data = raw_data;
 
                 `FUNCT3_HALF: begin
-                    if (byte_offset[1] == 1'b0)
+                    if (q_offset[1] == 1'b0)
                         read_data = {{16{raw_data[15]}}, raw_data[15:0]};
                     else
                         read_data = {{16{raw_data[31]}}, raw_data[31:16]};
                 end
 
                 `FUNCT3_HALFU: begin
-                    if (byte_offset[1] == 1'b0)
+                    if (q_offset[1] == 1'b0)
                         read_data = {16'd0, raw_data[15:0]};
                     else
                         read_data = {16'd0, raw_data[31:16]};
                 end
 
                 `FUNCT3_BYTE: begin
-                    case (byte_offset)
+                    case (q_offset)
                         2'b00: read_data = {{24{raw_data[7]}},  raw_data[7:0]};
                         2'b01: read_data = {{24{raw_data[15]}}, raw_data[15:8]};
                         2'b10: read_data = {{24{raw_data[23]}}, raw_data[23:16]};
@@ -143,7 +154,7 @@ module data_memory (
                 end
 
                 `FUNCT3_BYTEU: begin
-                    case (byte_offset)
+                    case (q_offset)
                         2'b00: read_data = {24'd0, raw_data[7:0]};
                         2'b01: read_data = {24'd0, raw_data[15:8]};
                         2'b10: read_data = {24'd0, raw_data[23:16]};
