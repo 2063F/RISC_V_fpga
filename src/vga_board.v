@@ -116,12 +116,26 @@ module vga_board (
     // Position inside the cell, 0..55
     wire [9:0] in_x_w  = board_x - cell_x * CELL;
     wire [9:0] in_y_w  = board_y - cell_y * CELL;
-    wire [5:0] in_x    = in_x_w[5:0];
-    wire [5:0] in_y    = in_y_w[5:0];
+
+    // -------------------------------------------------------------------------
+    // Pipeline register between the cell split and the disc test
+    // -------------------------------------------------------------------------
+    // The cell split (compare chain + multiply) and the disc test (another
+    // multiply) do not fit one 50 MHz cycle together. The scan counters only
+    // move on pix_en, so they hold for two clocks: registering here on every
+    // clock leaves the stage-1 values matching the current h_cnt/v_cnt by the
+    // time the outputs load on the next pix_en. The picture is not shifted.
+    reg       show_q;                 // visible && on_board
+    reg [5:0] in_x, in_y;
+    reg [5:0] sq;
 
     // Row 0 (rank 1) is drawn at the top, matching print_board().
-    wire [2:0] row     = cell_y;
-    wire [5:0] sq      = {row, cell_x};
+    always @(posedge clk) begin
+        show_q <= visible && on_board;
+        in_x   <= in_x_w[5:0];
+        in_y   <= in_y_w[5:0];
+        sq     <= {cell_y, cell_x};
+    end
 
     // 1 px on each side of every cell -> 2 px inner lines, 1 px outer frame.
     wire grid = (in_x == 6'd0) || (in_x == CELL - 1) ||
@@ -138,7 +152,7 @@ module vga_board (
     wire is_white = white_bitmap[sq];
 
     // -------------------------------------------------------------------------
-    // Registered outputs (sync and color share the same one-cycle latency)
+    // Registered outputs (sync and color share the same one-pixel latency)
     // -------------------------------------------------------------------------
     always @(posedge clk) begin
         if (!rst_n) begin
@@ -151,7 +165,7 @@ module vga_board (
             vga_vsync <= ~((v_cnt >= V_VISIBLE + V_FRONT) &&
                            (v_cnt <  V_VISIBLE + V_FRONT + V_SYNC));
 
-            if (!visible || !on_board || grid) begin
+            if (!show_q || grid) begin
                 {vga_r, vga_g, vga_b} <= 3'b000;
             end else if (disc && is_black) begin
                 {vga_r, vga_g, vga_b} <= 3'b000;
