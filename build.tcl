@@ -64,6 +64,17 @@ set_option -use_ready_as_gpio 1
 set_option -use_done_as_gpio 1
 set_option -use_cpu_as_gpio 1
 
+# Place & Route effort. Most of the remaining delay on the 50 MHz paths is
+# routing (~80% on the worst ones), so timing-driven placement/routing and
+# duplicating high-fanout drivers help more than further logic changes.
+# 0 is the tool default for both; set them back to 0 to compare.
+#   place_option : 0 = default, 1 = timing-driven (2-4: other strategies)
+#   route_option : 0 = default, 1 = timing-driven (2: other strategy)
+#   replicate_resources : duplicate high-fanout registers to cut long nets
+set_option -place_option 1
+set_option -route_option 1
+set_option -replicate_resources 1
+
 # Run Synthesis
 run syn
 
