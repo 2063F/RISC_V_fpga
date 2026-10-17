@@ -25,15 +25,31 @@
 // Branches and jumps resolve in EX, so a taken one discards the two
 // instructions behind it.
 //
+// Traps
+// -----
+// Exceptions and interrupts are both taken in EX, on the instruction sitting
+// there: it is cancelled (no register, memory, CSR or MMIO write), mepc gets
+// its PC, and the two instructions behind it are discarded exactly as for a
+// taken branch. Everything the trap decision needs is either registered in
+// ID/EX or derived from the low two address bits, so it never waits on the
+// full ALU result - except for a taken branch to a misaligned target, which
+// only redirects the PC (branches write nothing else).
+//
+// An interrupt is only taken on an instruction's first cycle in EX. Once a
+// load has issued its read or the multiplier/divider has started, the
+// instruction runs to completion and the interrupt waits for the next one.
+//
 // Dependencies: riscv_defines.vh, instruction_memory.v, instruction_decoder.v,
 //               imm_gen.v, register_file.v, control_unit.v, alu.v,
-//               multiplier.v, divider.v, data_memory.v, uart_tx.v, uart_rx.v
+//               multiplier.v, divider.v, data_memory.v, uart_tx.v, uart_rx.v,
+//               csr_file.v, timer.v
 //////////////////////////////////////////////////////////////////////////////////
 
 `include "riscv_defines.vh"
 
 module cpu_top #(
-    parameter INIT_FILE = ""
+    parameter INIT_FILE = "",
+    parameter integer TIMER_DIV = 50    // clocks per mtime tick (50 MHz -> 1 us)
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -88,6 +104,12 @@ module cpu_top #(
     wire        id_mem_read, id_mem_write;
     wire [1:0]  id_wb_sel;
     wire [31:0] id_imm;
+    wire        id_dec_illegal, id_ecall, id_ebreak, id_mret;
+    wire        id_csr, id_csr_write;
+    wire        id_csr_illegal;
+    // An unknown CSR address, or a write to a read-only one, is an illegal
+    // instruction just like a bad opcode.
+    wire        id_illegal = id_dec_illegal || (id_csr && id_csr_illegal);
 
     wire [31:0] rf_rd1, rf_rd2;
 
@@ -107,6 +129,12 @@ module cpu_top #(
     reg  [2:0]  ex_funct3;
     reg  [6:0]  ex_opcode;
     reg         ex_valid;
+    reg         ex_fetch_fault;  // the fetch was outside the instruction ROM
+    reg         ex_illegal;
+    reg         ex_ecall, ex_ebreak, ex_mret;
+    reg         ex_csr, ex_csr_write;
+    reg  [4:0]  ex_rs1_idx;      // uimm of the CSR immediate forms
+    reg  [31:0] ex_inst;         // for mtval on an illegal instruction
 
     // Stall bookkeeping
     reg         load_pending;    // 1 during the second (data) cycle of a load
@@ -131,6 +159,85 @@ module cpu_top #(
     wire branch_or_jump = ex_valid && (pc_sel != 2'd0);
 
     // =========================================================================
+    // Traps (EX)
+    // =========================================================================
+    // The low two bits of rs1 + imm, computed on their own. Loads, stores and
+    // JALR all form their address this way, and the alignment checks below only
+    // need these bits - not the 32-bit carry chain behind alu_result.
+    wire [1:0] addr_lo = ex_rs1_data[1:0] + ex_imm[1:0];
+
+    // funct3[1:0]: 00 byte, 01 halfword, 10 word (same for loads and stores)
+    wire ls_misaligned = ((ex_funct3[1:0] == 2'b10) && (addr_lo != 2'b00)) ||
+                         ((ex_funct3[1:0] == 2'b01) &&  addr_lo[0]);
+
+    // PCs are always word aligned, so a JAL or branch target is misaligned
+    // exactly when imm[1] is set. JALR clears bit 0 of its target itself.
+    wire is_jalr          = (ex_opcode == `OP_JALR);
+    wire exc_jump_mis     = ex_jump && (is_jalr ? addr_lo[1] : ex_imm[1]);
+    wire exc_load_mis     = ex_mem_read  && ls_misaligned;
+    wire exc_store_mis    = ex_mem_write && ls_misaligned;
+
+    wire exc_early = ex_valid && (ex_fetch_fault || ex_illegal || ex_ecall ||
+                                  ex_ebreak || exc_jump_mis ||
+                                  exc_load_mis || exc_store_mis);
+
+    wire        irq_pending;
+    wire [3:0]  irq_code;
+    wire        irq_take = ex_valid && irq_pending && !load_pending && !mcycle_started;
+
+    // trap_early is everything except a taken branch to a misaligned target.
+    // It gates the register, memory, CSR and MMIO writes and the stalls. The
+    // branch case depends on the branch comparison, so it is kept off those
+    // paths; a branch writes none of them anyway.
+    wire trap_early     = irq_take || exc_early;
+    wire exc_branch_mis = ex_valid && ex_branch && ex_imm[1] && (pc_sel != 2'd0);
+    wire trap           = trap_early || exc_branch_mis;
+
+    wire mret_take = ex_valid && ex_mret && !trap_early;
+
+    reg  [3:0]  trap_code;
+    reg  [31:0] trap_val;
+    wire [31:0] jalr_target;
+    wire [31:0] branch_target;
+
+    always @(*) begin
+        trap_val = 32'd0;
+        if (irq_take) begin
+            trap_code = irq_code;
+        end else if (ex_fetch_fault) begin
+            trap_code = `EXC_INST_ACCESS;
+            trap_val  = ex_pc;
+        end else if (ex_illegal) begin
+            trap_code = `EXC_ILLEGAL_INST;
+            trap_val  = ex_inst;
+        end else if (ex_ebreak) begin
+            trap_code = `EXC_BREAKPOINT;
+        end else if (ex_ecall) begin
+            trap_code = `EXC_ECALL_M;
+        end else if (exc_jump_mis || exc_branch_mis) begin
+            trap_code = `EXC_INST_MISALIGNED;
+            trap_val  = is_jalr ? jalr_target : branch_target;
+        end else if (exc_load_mis) begin
+            trap_code = `EXC_LOAD_MISALIGNED;
+            trap_val  = alu_result;
+        end else begin
+            trap_code = `EXC_STORE_MISALIGNED;
+            trap_val  = alu_result;
+        end
+    end
+
+    wire [31:0] csr_rdata;
+    wire [31:0] exc_vector, irq_vector, mepc;
+    wire [31:0] trap_vector = irq_take ? irq_vector : exc_vector;
+
+    // A taken branch or jump, a trap, or MRET: the two younger instructions go.
+    wire redirect = branch_or_jump || trap || mret_take;
+
+    // minstret counts an instruction one cycle after it retires, so that its
+    // increment does not hang off the trap decision.
+    reg instret_pulse;
+
+    // =========================================================================
     // Load stall
     // =========================================================================
     // Both memories have a registered read port (required to map them onto
@@ -139,7 +246,7 @@ module cpu_top #(
     // funct3 and the register operands all stay put while frozen, so the
     // memory's combinational sizing/extension logic still sees the load's own
     // controls when the data word arrives.
-    wire load_stall = ex_valid && ex_mem_read && !load_pending;
+    wire load_stall = ex_valid && ex_mem_read && !load_pending && !trap_early;
 
     // =========================================================================
     // RV32M stall (multiply and divide)
@@ -160,12 +267,12 @@ module cpu_top #(
                   (ex_alu_op == `ALU_REM)    || (ex_alu_op == `ALU_REMU);
 
     wire is_mcycle    = ex_valid && (is_mul || is_div);
-    wire mcycle_start = is_mcycle && !mcycle_started;
+    wire mcycle_start = is_mcycle && !mcycle_started && !trap_early;
     wire mcycle_done  = is_div ? div_done : mul_done;
-    wire mcycle_stall = is_mcycle && !mcycle_done;
+    wire mcycle_stall = is_mcycle && !mcycle_done && !trap_early;
 
     wire stall     = load_stall || mcycle_stall;
-    wire wb_enable = ex_valid && ex_reg_write && !stall;
+    wire wb_enable = ex_valid && ex_reg_write && !stall && !trap_early;
 
     // =========================================================================
     // Forwarding: EX write-back -> ID register read
@@ -205,10 +312,14 @@ module cpu_top #(
     wire mmio_uart_stat_sel    = (alu_result == 32'h8000_0014);
     wire mmio_uart_rx_sel      = (alu_result == 32'h8000_0018);
     wire mmio_uart_rx_stat_sel = (alu_result == 32'h8000_001C);
+    //       0x8000_0100 - 0x8000_011F = machine timer (see timer.v)
+    wire mmio_timer_sel;
     wire mmio_sel              = mmio_uart_tx_sel || mmio_uart_stat_sel ||
-                                 mmio_uart_rx_sel || mmio_uart_rx_stat_sel;
+                                 mmio_uart_rx_sel || mmio_uart_rx_stat_sel ||
+                                 mmio_timer_sel;
 
-    wire ex_store = ex_valid && ex_mem_write;
+    // A trapping store is cancelled before it reaches any memory or device.
+    wire ex_store = ex_valid && ex_mem_write && !trap_early;
     wire ex_load  = ex_valid && ex_mem_read;
 
     assign mem_addr       = alu_result;
@@ -250,6 +361,62 @@ module cpu_top #(
     );
 
     // =========================================================================
+    // Machine timer MMIO
+    // =========================================================================
+    wire [31:0] timer_read_data;
+    wire [63:0] mtime;
+    wire        irq_timer, irq_soft;
+
+    timer #(
+        .DIV (TIMER_DIV)
+    ) timer_inst (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .addr       (alu_result),
+        .write_data (ex_rs2_data),
+        .write_en   (ex_store && mmio_timer_sel),
+        .sel        (mmio_timer_sel),
+        .read_data  (timer_read_data),
+        .mtime      (mtime),
+        .irq_timer  (irq_timer),
+        .irq_soft   (irq_soft)
+    );
+
+    // =========================================================================
+    // CSRs and trap state
+    // =========================================================================
+    // The machine external interrupt is the UART receiver: it is pending while
+    // a received byte is waiting, and reading UART RX data clears it.
+    csr_file csrs (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .chk_addr    (id_inst[31:20]),
+        .chk_write   (id_csr_write),
+        .chk_illegal (id_csr_illegal),
+        .addr        (ex_imm[11:0]),
+        .rdata       (csr_rdata),
+        .we          (ex_valid && ex_csr && ex_csr_write && !trap_early && !stall),
+        .op          (ex_funct3[1:0]),
+        .operand     (ex_funct3[2] ? {27'd0, ex_rs1_idx} : ex_rs1_data),
+        .trap        (trap),
+        .trap_irq    (irq_take),
+        .trap_code   (trap_code),
+        .trap_pc     (ex_pc),
+        .trap_val    (trap_val),
+        .mret        (mret_take),
+        .instret     (instret_pulse),
+        .irq_ext     (uart_rx_ready),
+        .irq_timer   (irq_timer),
+        .irq_soft    (irq_soft),
+        .mtime       (mtime),
+        .irq_pending (irq_pending),
+        .irq_code    (irq_code),
+        .exc_vector  (exc_vector),
+        .irq_vector  (irq_vector),
+        .mepc        (mepc)
+    );
+
+    // =========================================================================
     // Module Instantiations
     // =========================================================================
 
@@ -280,7 +447,13 @@ module cpu_top #(
         .jump      (id_jump),
         .mem_read  (id_mem_read),
         .mem_write (id_mem_write),
-        .wb_sel    (id_wb_sel)
+        .wb_sel    (id_wb_sel),
+        .illegal   (id_dec_illegal),
+        .ecall     (id_ecall),
+        .ebreak    (id_ebreak),
+        .mret      (id_mret),
+        .csr       (id_csr),
+        .csr_write (id_csr_write)
     );
 
     // 3. Immediate Generator (ID)
@@ -431,6 +604,8 @@ module cpu_top #(
             selected_mem_data = {24'd0, uart_rx_data};
         end else if (mmio_uart_rx_stat_sel) begin
             selected_mem_data = {31'd0, uart_rx_ready};
+        end else if (mmio_timer_sel) begin
+            selected_mem_data = timer_read_data;
         end else begin
             selected_mem_data = mem_read_data;
         end
@@ -439,19 +614,23 @@ module cpu_top #(
     // Register write-back select
     always @(*) begin
         case (ex_wb_sel)
-            2'd0:    reg_write_data = exec_result;
-            2'd1:    reg_write_data = selected_mem_data;
-            2'd2:    reg_write_data = ex_pc + 32'd4;
-            default: reg_write_data = exec_result;
+            `WB_ALU: reg_write_data = exec_result;
+            `WB_MEM: reg_write_data = selected_mem_data;
+            `WB_PC4: reg_write_data = ex_pc + 32'd4;
+            `WB_CSR: reg_write_data = csr_rdata;
         endcase
     end
 
     // Next PC select. JALR clears the low bit of the target (RISC-V spec).
-    wire [31:0] jalr_target   = (ex_rs1_data + ex_imm) & 32'hFFFF_FFFE;
-    wire [31:0] branch_target = ex_pc + ex_imm;
+    assign jalr_target   = (ex_rs1_data + ex_imm) & 32'hFFFF_FFFE;
+    assign branch_target = ex_pc + ex_imm;
 
     always @(*) begin
-        if (branch_or_jump) begin
+        if (trap) begin
+            next_pc_temp = trap_vector;
+        end else if (mret_take) begin
+            next_pc_temp = mepc;
+        end else if (branch_or_jump) begin
             case (pc_sel)
                 2'd1:    next_pc_temp = branch_target;
                 2'd2:    next_pc_temp = jalr_target;
@@ -466,10 +645,10 @@ module cpu_top #(
     // =========================================================================
     // Pipeline Registers
     // =========================================================================
-    // A taken branch or jump is only known in EX, so the two instructions
-    // behind it - one in ID, one being fetched - are discarded by clearing
-    // their valid bits. The ID/EX payload is left alone; ex_valid gates
-    // everything that could have an effect.
+    // A taken branch or jump (or a trap, or MRET) is only known in EX, so the
+    // two instructions behind it - one in ID, one being fetched - are discarded
+    // by clearing their valid bits. The ID/EX payload is left alone; ex_valid
+    // gates everything that could have an effect.
     always @(posedge clk) begin
         if (!rst_n) begin
             pc             <= 32'd0;
@@ -493,17 +672,29 @@ module cpu_top #(
             ex_opcode      <= 7'd0;
             load_pending   <= 1'b0;
             mcycle_started <= 1'b0;
+            instret_pulse  <= 1'b0;
+            ex_fetch_fault <= 1'b0;
+            ex_illegal     <= 1'b0;
+            ex_ecall       <= 1'b0;
+            ex_ebreak      <= 1'b0;
+            ex_mret        <= 1'b0;
+            ex_csr         <= 1'b0;
+            ex_csr_write   <= 1'b0;
+            ex_rs1_idx     <= 5'd0;
+            ex_inst        <= 32'd0;
         end else if (stall) begin
             // Hold every stage until the memory, multiplier or divider answers.
             load_pending   <= 1'b1;
             mcycle_started <= 1'b1;
+            instret_pulse  <= 1'b0;
         end else begin
             load_pending   <= 1'b0;
             mcycle_started <= 1'b0;
+            instret_pulse  <= ex_valid && !trap;
 
             pc <= next_pc;
 
-            if (branch_or_jump) begin
+            if (redirect) begin
                 ifid_pc    <= 32'd0;
                 ifid_valid <= 1'b0;
                 ex_valid   <= 1'b0;
@@ -527,6 +718,16 @@ module cpu_top #(
                 ex_wb_sel    <= id_wb_sel;
                 ex_funct3    <= id_inst[14:12];
                 ex_opcode    <= id_inst[6:0];
+
+                ex_fetch_fault <= ifid_valid && !fetched_valid;
+                ex_illegal     <= id_illegal;
+                ex_ecall       <= id_ecall;
+                ex_ebreak      <= id_ebreak;
+                ex_mret        <= id_mret;
+                ex_csr         <= id_csr;
+                ex_csr_write   <= id_csr_write;
+                ex_rs1_idx     <= id_rs1;
+                ex_inst        <= id_inst;
             end
         end
     end

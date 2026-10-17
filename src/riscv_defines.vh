@@ -14,8 +14,8 @@
 `define OP_STORE    7'b0100011   // Store (SB, SH, SW)
 `define OP_OP_IMM   7'b0010011   // Register-Immediate ALU (ADDI, SLTI, etc.)
 `define OP_OP       7'b0110011   // Register-Register ALU (ADD, SUB, etc.)
-`define OP_FENCE    7'b0001111   // Memory Fence
-`define OP_SYSTEM   7'b1110011   // System (ECALL, EBREAK)
+`define OP_FENCE    7'b0001111   // Memory Fence (FENCE, FENCE.I)
+`define OP_SYSTEM   7'b1110011   // System (ECALL, EBREAK, MRET, WFI, CSR*)
 
 // =========================================================================
 // ALU Operation Codes (5-bit width)
@@ -100,3 +100,71 @@
 `define IMM_B  3'd2   // B-type
 `define IMM_U  3'd3   // U-type
 `define IMM_J  3'd4   // J-type
+
+// =========================================================================
+// SYSTEM instructions (opcode OP_SYSTEM)
+// =========================================================================
+// funct3 = 000 selects the privileged group, identified by the whole word.
+`define FUNCT3_PRIV     3'b000
+`define INST_ECALL      32'h0000_0073
+`define INST_EBREAK     32'h0010_0073
+`define INST_MRET       32'h3020_0073
+`define INST_WFI        32'h1050_0073
+
+// The other funct3 values are the Zicsr instructions. funct3[2] selects the
+// immediate form (uimm in the rs1 field) and funct3[1:0] the operation.
+`define CSR_OP_RW       2'b01
+`define CSR_OP_RS       2'b10
+`define CSR_OP_RC       2'b11
+
+// =========================================================================
+// Write-back select (wb_sel)
+// =========================================================================
+`define WB_ALU   2'd0
+`define WB_MEM   2'd1
+`define WB_PC4   2'd2
+`define WB_CSR   2'd3
+
+// =========================================================================
+// CSR addresses (machine mode only)
+// =========================================================================
+`define CSR_MSTATUS     12'h300
+`define CSR_MISA        12'h301
+`define CSR_MIE         12'h304
+`define CSR_MTVEC       12'h305
+`define CSR_MSTATUSH    12'h310
+`define CSR_MSCRATCH    12'h340
+`define CSR_MEPC        12'h341
+`define CSR_MCAUSE      12'h342
+`define CSR_MTVAL       12'h343
+`define CSR_MIP         12'h344
+`define CSR_MCYCLE      12'hB00
+`define CSR_MINSTRET    12'hB02
+`define CSR_MCYCLEH     12'hB80
+`define CSR_MINSTRETH   12'hB82
+`define CSR_CYCLE       12'hC00
+`define CSR_TIME        12'hC01
+`define CSR_INSTRET     12'hC02
+`define CSR_CYCLEH      12'hC80
+`define CSR_TIMEH       12'hC81
+`define CSR_INSTRETH    12'hC82
+`define CSR_MVENDORID   12'hF11
+`define CSR_MARCHID     12'hF12
+`define CSR_MIMPID      12'hF13
+`define CSR_MHARTID     12'hF14
+
+// =========================================================================
+// mcause codes
+// =========================================================================
+// Exceptions (mcause[31] = 0)
+`define EXC_INST_MISALIGNED   4'd0
+`define EXC_INST_ACCESS       4'd1
+`define EXC_ILLEGAL_INST      4'd2
+`define EXC_BREAKPOINT        4'd3
+`define EXC_LOAD_MISALIGNED   4'd4
+`define EXC_STORE_MISALIGNED  4'd6
+`define EXC_ECALL_M           4'd11
+// Interrupts (mcause[31] = 1)
+`define IRQ_M_SOFT            4'd3
+`define IRQ_M_TIMER           4'd7
+`define IRQ_M_EXT             4'd11
