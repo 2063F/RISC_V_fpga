@@ -15,12 +15,15 @@ module tb_fpga_top;
     integer timeout;
 
     // Instantiate FPGA top-level wrapper
-    fpga_top uut (
+    fpga_top #(
+        .INIT_FILE("examples/loop55.hex")
+    ) uut (
         .clk      (clk),
         .rst_btn  (rst_btn),
         .user_btn (user_btn),
         .led      (led),
-        .uart_rx  (1'b1)   // UART RX line idle (high)
+        .uart_rx  (1'b1),  // UART RX line idle (high)
+        .kbd_col  (8'hFF)  // No keys pressed (columns pulled up)
     );
 
     // Clock generation: 50 MHz (20ns period)

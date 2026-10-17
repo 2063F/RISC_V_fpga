@@ -25,3 +25,124 @@ IO_LOC "led[0]" E8;
 IO_PORT "led[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
 IO_LOC "led[1]" D7;
 IO_PORT "led[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+
+// --- 8x8 Matrix Keyboard ---
+// kbd_row[7:0] : 行を駆動する出力(アクティブLow)。PULL_MODE不要。
+// kbd_col[7:0] : 列を読み取る入力(アクティブLow)。内部プルアップを有効化。
+IO_LOC "kbd_row[0]" H1;
+IO_PORT "kbd_row[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "kbd_row[1]" K7;
+IO_PORT "kbd_row[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "kbd_row[2]" L7;
+IO_PORT "kbd_row[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "kbd_row[3]" L10;
+IO_PORT "kbd_row[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "kbd_row[4]" L9;
+IO_PORT "kbd_row[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "kbd_row[5]" J8;
+IO_PORT "kbd_row[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "kbd_row[6]" F7;
+IO_PORT "kbd_row[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "kbd_row[7]" J11;
+IO_PORT "kbd_row[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "kbd_col[0]" J10;
+IO_PORT "kbd_col[0]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "kbd_col[1]" F6;
+IO_PORT "kbd_col[1]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "kbd_col[2]" K8;
+IO_PORT "kbd_col[2]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "kbd_col[3]" K9;
+IO_PORT "kbd_col[3]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "kbd_col[4]" K10;
+IO_PORT "kbd_col[4]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "kbd_col[5]" L8;
+IO_PORT "kbd_col[5]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "kbd_col[6]" J7;
+IO_PORT "kbd_col[6]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC "kbd_col[7]" H2;
+IO_PORT "kbd_col[7]" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
+// --- 8x8 Bicolor Dot Matrix LED (Lite-On LTP-12188M-07: ANODE ROW / CATHODE COLUMN) ---
+// led_mat_row[7:0]   : row drive, active-high (anode). One row lit at a time.
+// led_mat_col_g[7:0] : green column, active-low (cathode).
+// led_mat_col_r[7:0] : red column, active-low (cathode).
+// Datasheet max ratings: 60mA (green) / 90mA (red) peak per dot, 25mA average
+// per dot - current-limiting resistors on rows/columns are required, this
+// FPGA cannot drive the LEDs directly without them.
+// Pin list re-grouped as: row front half (1-4), row back half (5-8),
+// red odd columns (1,3,5,7), red even columns (2,4,6,8),
+// green odd columns (1,3,5,7), green even columns (2,4,6,8) - matches the
+// physical wiring order, each group kept in its original left-to-right
+// pin order from the pin list the user supplied. Group-to-group swap
+// per on-board verification: row front half <-> red even columns,
+// row back half <-> green odd columns, red odd columns <-> green even
+// columns (each swapped pair keeps its original left-to-right order).
+IO_LOC "led_mat_row[0]" G10;
+IO_PORT "led_mat_row[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_row[1]" D10;
+IO_PORT "led_mat_row[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_row[2]" B10;
+IO_PORT "led_mat_row[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_row[3]" C10;
+IO_PORT "led_mat_row[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_row[4]" A10;
+IO_PORT "led_mat_row[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_row[5]" E10;
+IO_PORT "led_mat_row[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_row[6]" L11;
+IO_PORT "led_mat_row[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_row[7]" K5;
+IO_PORT "led_mat_row[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_g[0]" G5;
+IO_PORT "led_mat_col_g[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_g[2]" G8;
+IO_PORT "led_mat_col_g[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_g[4]" H7;
+IO_PORT "led_mat_col_g[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_g[6]" J5;
+IO_PORT "led_mat_col_g[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_g[1]" G11;
+IO_PORT "led_mat_col_g[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_g[3]" D11;
+IO_PORT "led_mat_col_g[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_g[5]" B11;
+IO_PORT "led_mat_col_g[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_g[7]" C11;
+IO_PORT "led_mat_col_g[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_r[0]" A11;
+IO_PORT "led_mat_col_r[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_r[2]" E11;
+IO_PORT "led_mat_col_r[2]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_r[4]" K11;
+IO_PORT "led_mat_col_r[4]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_r[6]" L5;
+IO_PORT "led_mat_col_r[6]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_r[1]" F5;
+IO_PORT "led_mat_col_r[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_r[3]" G7;
+IO_PORT "led_mat_col_r[3]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_r[5]" H8;
+IO_PORT "led_mat_col_r[5]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+IO_LOC "led_mat_col_r[7]" H5;
+IO_PORT "led_mat_col_r[7]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=16;
+
+// --- VGA (1 bit per color, resistor DAC) ---
+// vga_r/g/b      : ~270 ohm in series to VGA pins 1/2/3 (75 ohm load -> ~0.7 V).
+// vga_hsync/vsync: VGA pins 13/14, direct or ~100 ohm in series. Active-low.
+// R/G/B returns (pins 6/7/8) and sync ground (pin 10) go to board GND.
+IO_LOC "vga_r" G4;
+IO_PORT "vga_r" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "vga_g" J1;
+IO_PORT "vga_g" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "vga_b" E3;
+IO_PORT "vga_b" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "vga_hsync" E1;
+IO_PORT "vga_hsync" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+IO_LOC "vga_vsync" F2;
+IO_PORT "vga_vsync" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8;
+
+// --- USB-A ホストポート (Dock 上、低速 USB 1.1。usb_hid_host.v) ---
+IO_LOC "usb_dp" L6;
+IO_PORT "usb_dp" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
+IO_LOC "usb_dm" K6;
+IO_PORT "usb_dm" IO_TYPE=LVCMOS33 PULL_MODE=NONE;
