@@ -1,4 +1,4 @@
-# Gowin EDA Tcl Build Script for RISK-V CPU
+# Gowin EDA Tcl Build Script for RISC-V CPU
 
 # Define project name and directory
 set proj_name "riscv_cpu"

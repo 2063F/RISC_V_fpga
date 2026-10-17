@@ -1,5 +1,5 @@
 // =============================================================================
-// imm_gen.v - Immediate Generator for RISC-V RV32I CPU
+// imm_gen.v - Immediate Generator for RISC-V RV32IM CPU
 // =============================================================================
 // Extracts and sign-extends the immediate value from the instruction based on
 // the instruction format.

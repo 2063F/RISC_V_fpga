@@ -6,12 +6,13 @@
 // Create Date: 2026/05/23
 // Design Name: 
 // Module Name: control_unit
-// Project Name: RISC-V RV32I CPU
+// Project Name: RISC-V RV32IM CPU
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
 // Tool Versions: 
-// Description: Control Unit for single cycle RISC-V CPU.
+// Description: Control Unit for the EX stage of the pipelined RISC-V CPU.
 //              Generates control signals for program counter multiplexers
 //              and ALU input A multiplexers based on instructions and flags.
+//              Branches and jumps are resolved here, in EX.
 // 
 // Dependencies: riscv_defines.vh
 // 

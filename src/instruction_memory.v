@@ -9,9 +9,9 @@
 // and blow past the device limit (see data_memory.v for the same story).
 //
 // Port A is the instruction fetch. Its output register IS the IF/ID pipeline
-// register - the address is applied in the fetch cycle and the instruction
-// appears in the execute cycle, exactly the timing cpu_top had when it latched
-// a combinational read into its own ifid_inst register. `ce` freezes it while
+// register - the address is applied in the fetch (IF) cycle and the
+// instruction appears in the decode (ID) cycle, so cpu_top needs no separate
+// ifid_inst register of its own. `ce` freezes it while
 // the CPU stalls, so a stalled instruction is not overwritten by the next one.
 // It reports out-of-range fetches through dout_valid instead of substituting a
 // NOP itself; cpu_top folds that into the flush mask it already needs.

@@ -1,5 +1,5 @@
 // =============================================================================
-// register_file.v - 32x32-bit Register File for RISC-V RV32I CPU
+// register_file.v - 32x32-bit Register File for RISC-V RV32IM CPU
 // =============================================================================
 // - 32 registers, each 32 bits wide (x0 through x31)
 // - x0 is hardwired to zero (reads always return 0, writes are ignored)

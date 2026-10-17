@@ -3,13 +3,14 @@
 // fpga_top.v - FPGA Top-Level Module for RISC-V CPU on Tang Primer 25K
 // =============================================================================
 // Features:
-// - Instantiates the single-cycle RISC-V CPU.
-// - Loads the loop55.hex test program (1+2+...+10 = 55).
+// - Instantiates the three-stage pipelined RV32IM CPU (cpu_top).
+// - Loads the program named by INIT_FILE into the instruction ROM
+//   (default: examples/loop55.hex, which computes 1+2+...+10 = 55).
 // - Exposes simple MMIO for LED and button access.
 // - Displays status on the 2 onboard LEDs:
-//   - LED[0]: Blinks at ~1Hz to show that the system clock is running (heartbeat).
-//   - LED[1]: Turns ON constantly if the CPU successfully computes x1 = 55.
-//             If the CPU has not finished or failed, LED[1] is OFF.
+//   - LED[0]: Blinks at ~1.5Hz to show that the system clock is running (heartbeat).
+//   - LED[1]: ON while x1 == 55 (loop55 finished) or while software sets the
+//             MMIO LED control register; OFF otherwise.
 // =============================================================================
 
 module fpga_top #(

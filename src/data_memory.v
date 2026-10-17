@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
 // Module Name: data_memory
-// Project Name: RISC-V RV32I CPU
+// Project Name: RISC-V RV32IM CPU
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
 // Description: 64 KB scratch RAM (0x0001_0000 - 0x0001_FFFF) supporting byte,
 //              halfword and word access.

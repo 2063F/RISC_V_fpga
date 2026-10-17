@@ -1,5 +1,5 @@
 """
-uart_echo.py  -  手動アセンブラ (RISC-V RV32I)
+assemble_uart_echo.py  -  手動アセンブラ (RISC-V RV32I)
 受信したシリアルデータをそのまま送信する（エコーバック）プログラムを生成する。
 """
 
