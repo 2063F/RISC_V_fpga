@@ -1,0 +1,138 @@
+diff --cc src/board_io.v
+index 3f8d081,2ad01ea..0000000
+--- a/src/board_io.v
++++ b/src/board_io.v
+@@@ -8,11 -8,25 +8,33 @@@
+  //                 - read returns the latched LED state in bit 0
+  //   0x8000_0024 : User button status register
+  //                 - read returns user_btn in bit 0
+++<<<<<<< Updated upstream
+ +//
+ +// read_data is registered: it answers the address one clock later. The CPU
+ +// samples external load data in the load's second (data) cycle with the
+ +// address held steady, so this costs nothing and keeps the address decode
+ +// off the CPU's write-back path.
+++=======
++ //   0x8000_0028 : Keyboard matrix ROW output register (8x8 scan matrix)
++ //                 - bits [7:0], active-low: write 0 to the row being
++ //                   scanned, 1 to all other rows. Reset value 0xFF (idle).
++ //   0x8000_002C : Keyboard matrix COL input register
++ //                 - bits [7:0], active-low: read returns kbd_col, a
++ //                   pressed key pulls its column bit to 0.
++ //   0x8000_0030 : 8x8 LED matrix GREEN bitmap, bits [31:0]  (low half)
++ //   0x8000_0034 : 8x8 LED matrix GREEN bitmap, bits [63:32] (high half)
++ //   0x8000_0038 : 8x8 LED matrix RED   bitmap, bits [31:0]  (low half)
++ //   0x8000_003C : 8x8 LED matrix RED   bitmap, bits [63:32] (high half)
++ //                 - bit (row*8+col) of the combined 64-bit value lights
++ //                   that dot in that color; led_matrix.v scans it out on
++ //                   its own once written. Reset value 0 (all dark).
++ //   0x8000_0040 : USB keyboard event register (usb_keyboard.v)
++ //                 - read: bit 9 = keyboard connected, bit 8 = an event is
++ //                   waiting, bits 5:0 = key index (0 = a1, 1 = b1, ...
++ //                   7 = h1, 8 = a2, ... 63 = h8). Reading does not consume
++ //                   the event.
++ //                 - write (any value): consume the event
+++>>>>>>> Stashed changes
+  // =============================================================================
+  
+  module board_io (
+@@@ -38,13 -90,20 +98,26 @@@
+          end
+      end
+  
+ -    always @(*) begin
+ -        read_data = 32'd0;
+ +    always @(posedge clk) begin
+ +        read_data <= 32'd0;
+          if (read_en) begin
+              case (addr)
+++<<<<<<< Updated upstream
+ +                LED_ADDR: read_data <= {31'd0, led_ctrl};
+ +                BTN_ADDR: read_data <= {31'd0, user_btn};
+ +                default:  read_data <= 32'd0;
+++=======
++                 LED_ADDR:          read_data = {31'd0, led_ctrl};
++                 BTN_ADDR:          read_data = {31'd0, user_btn};
++                 KBD_ROW_ADDR:      read_data = {24'd0, kbd_row};
++                 KBD_COL_ADDR:      read_data = {24'd0, kbd_col};
++                 LED_GREEN_LO_ADDR: read_data = led_green_bitmap[31:0];
++                 LED_GREEN_HI_ADDR: read_data = led_green_bitmap[63:32];
++                 LED_RED_LO_ADDR:   read_data = led_red_bitmap[31:0];
++                 LED_RED_HI_ADDR:   read_data = led_red_bitmap[63:32];
++                 USBKEY_ADDR:       read_data = {22'd0, usbkey_connected, usbkey_valid, 2'd0, usbkey_index};
++                 default:           read_data = 32'd0;
+++>>>>>>> Stashed changes
+              endcase
+          end
+      end
+diff --cc src/fpga_top.v
+index b748ddd,8634abe..0000000
+--- a/src/fpga_top.v
++++ b/src/fpga_top.v
+@@@ -3,14 -3,16 +3,23 @@@
+  // fpga_top.v - FPGA Top-Level Module for RISC-V CPU on Tang Primer 25K
+  // =============================================================================
+  // Features:
+++<<<<<<< Updated upstream
+ +// - Instantiates the three-stage pipelined RV32IM CPU (cpu_top).
+ +// - Loads the program named by INIT_FILE into the instruction ROM
+ +//   (default: examples/loop55.hex, which computes 1+2+...+10 = 55).
+ +// - Exposes simple MMIO for LED and button access.
+++=======
++ // - Instantiates the single-cycle RISC-V CPU.
++ // - Loads the Othello program by default (INIT_FILE); examples/loop55.hex
++ //   (1+2+...+10 = 55) is the minimal bring-up test.
++ // - Exposes simple MMIO for LED, button, 8x8 key matrix, 8x8 LED matrix and
++ //   the USB keyboard on the Dock's USB-A port (see board_io.v).
++ // - Mirrors the LED matrix bitmaps onto a 640x480 VGA output.
+++>>>>>>> Stashed changes
+  // - Displays status on the 2 onboard LEDs:
+ -//   - LED[0]: Blinks at ~1Hz to show that the system clock is running (heartbeat).
+ -//   - LED[1]: Turns ON constantly if the CPU successfully computes x1 = 55.
+ -//             If the CPU has not finished or failed, LED[1] is OFF.
+ +//   - LED[0]: Blinks at ~1.5Hz to show that the system clock is running (heartbeat).
+ +//   - LED[1]: ON while x1 == 55 (loop55 finished) or while software sets the
+ +//             MMIO LED control register; OFF otherwise.
+  // =============================================================================
+  
+  module fpga_top #(
+diff --git a/src/data_memory.v b/src/data_memory.v
+index 63bee8c..6bf8f94 100644
+--- a/src/data_memory.v
++++ b/src/data_memory.v
+@@ -3,12 +3,12 @@
+ // Module Name: data_memory
+ // Project Name: RISC-V RV32IM CPU
+ // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
+-// Description: 64 KB scratch RAM (0x0001_0000 - 0x0001_FFFF) supporting byte,
++// Description: 32 KB scratch RAM (0x0001_0000 - 0x0001_7FFF) supporting byte,
+ //              halfword and word access.
+ //
+ // Why this module looks the way it does
+ // -------------------------------------
+-// The RAM has to land in BSRAM; there is no other way to fit 64 KB on this
++// The RAM has to land in BSRAM; there is no other way to fit 32 KB on this
+ // device. Two things are needed for GowinSynthesis to infer it, both verified
+ // by running the real flow:
+ //
+@@ -40,11 +40,16 @@ module data_memory (
+     output reg  [31:0] read_data      // Read data, valid one cycle after addr/read_en
+ );
+ 
+-    localparam integer WORDS = 16384; // 16384 words = 64 KB
++    // 16384 words (64 KB) would need 32 BSRAM for this RAM alone; combined
++    // with instruction_memory's ROM that can exceed the device's BSRAM count
++    // once the ROM is densely packed (see instruction_memory.v). Halved to
++    // 8192 words (32 KB) to leave headroom - no example program here comes
++    // close to using that much RAM.
++    localparam integer WORDS = 8192; // 8192 words = 32 KB
+ 
+-    // Only 0x0001_0000 - 0x0001_FFFF is implemented.
+-    wire        addr_valid  = (addr >= 32'h0001_0000) && (addr <= 32'h0001_FFFF);
+-    wire [13:0] word_addr   = addr[15:2];
++    // Only 0x0001_0000 - 0x0001_7FFF is implemented.
++    wire        addr_valid  = (addr >= 32'h0001_0000) && (addr <= 32'h0001_7FFF);
++    wire [12:0] word_addr   = addr[14:2];
+     wire [1:0]  byte_offset = addr[1:0];
+ 
+     // =========================================================================
