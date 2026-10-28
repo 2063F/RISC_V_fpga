@@ -71,7 +71,9 @@
 
 `include "riscv_defines.vh"
 
-module rv_core (
+module rv_core #(
+    parameter [31:0] HART_ID = 32'd0   // mhartid
+) (
     input  wire        clk,
     input  wire        rst_n,
 
@@ -364,7 +366,9 @@ module rv_core (
     // =========================================================================
     // CSRs and trap state
     // =========================================================================
-    csr_file csrs (
+    csr_file #(
+        .HART_ID (HART_ID)
+    ) csrs (
         .clk         (clk),
         .rst_n       (rst_n),
         .chk_addr    (id_inst[31:20]),

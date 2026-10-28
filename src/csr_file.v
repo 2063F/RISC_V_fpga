@@ -12,7 +12,7 @@
 //   mtvec     BASE[31:2] + MODE bit 0 (0 = direct, 1 = vectored)
 //   mscratch, mepc, mcause, mtval
 //   mcycle/minstret (+ h) and the read-only cycle/time/instret (+ h) shadows
-//   mvendorid/marchid/mimpid/mhartid, all 0
+//   mvendorid/marchid/mimpid, all 0; mhartid = HART_ID
 //
 // Any other address is an illegal instruction, as is writing a read-only CSR
 // (address bits [11:10] = 11). That check is a separate port, used by cpu_top
@@ -25,7 +25,9 @@
 
 `include "riscv_defines.vh"
 
-module csr_file (
+module csr_file #(
+    parameter [31:0] HART_ID = 32'd0
+) (
     input  wire        clk,
     input  wire        rst_n,
 
@@ -124,7 +126,8 @@ module csr_file (
             `CSR_INSTRETH:  rdata = minstret[63:32];
             `CSR_TIME:      rdata = mtime[31:0];
             `CSR_TIMEH:     rdata = mtime[63:32];
-            default:        rdata = 32'd0;  // mstatush, IDs, and unreachable
+            `CSR_MHARTID:   rdata = HART_ID;
+            default:        rdata = 32'd0;  // mstatush, other IDs, unreachable
         endcase
     end
 

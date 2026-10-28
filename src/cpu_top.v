@@ -9,7 +9,7 @@
 //   0x0000_0000 - 0x0000_7FFF  instruction ROM (fetch on port A, .rodata on B)
 //   0x0001_0000 - 0x0001_7FFF  data RAM
 //   0x8000_0010 - 0x8000_001C  UART
-//   0x8000_0100 - 0x8000_011F  machine timer
+//   0x8000_0100 - 0x8000_011F  machine timer (hart 0's block, see timer.v)
 //   anything else              mem_* port (board_io in fpga_top.v)
 //
 // The hart's data bus protocol is described in rv_core.v. Every slave here
@@ -70,7 +70,9 @@ module cpu_top #(
     wire [63:0] mtime;
     wire        irq_timer, irq_soft;
 
-    rv_core core0 (
+    rv_core #(
+        .HART_ID (0)
+    ) core0 (
         .clk         (clk),
         .rst_n       (rst_n),
         .ibus_addr   (ibus_addr),
@@ -227,7 +229,8 @@ module cpu_top #(
     wire [31:0] timer_read_data;
 
     timer #(
-        .DIV (TIMER_DIV)
+        .DIV       (TIMER_DIV),
+        .NUM_HARTS (1)
     ) timer_inst (
         .clk        (clk),
         .rst_n      (rst_n),
