@@ -49,12 +49,12 @@ module tb_memory_full;
         input [255:0] name;
         begin
             #1;
-            if (uut.regfile.regs[reg_num] === expected) begin
+            if (uut.core0.regfile.regs[reg_num] === expected) begin
                 $display("  PASS  %s: x%0d = 0x%08h", name, reg_num, expected);
                 pass_count = pass_count + 1;
             end else begin
                 $display("  FAIL  %s: x%0d = 0x%08h (expected 0x%08h)",
-                         name, reg_num, uut.regfile.regs[reg_num], expected);
+                         name, reg_num, uut.core0.regfile.regs[reg_num], expected);
                 fail_count = fail_count + 1;
             end
         end

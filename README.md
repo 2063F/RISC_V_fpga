@@ -154,6 +154,32 @@ set_csr(mstatus, MSTATUS_MIE);
 > リセット直後の `mtvec` は 0 なので、ハンドラを設定する前にトラップが起きると
 > リセットベクタ (0番地) に戻ってプログラムが最初からやり直しになります。
 
+## コアと SoC の構成
+
+マルチコア化の準備として、CPU を「ハート」と「SoC」に分けています。
+
+- `rv_core.v` : ハート 1 個分 (3段パイプライン・乗除算器・CSR)。メモリや周辺は持たず、
+  命令フェッチポートとデータバスだけで外とつながる
+- `cpu_top.v` : SoC。ハート・命令ROM・データRAM・UART・タイマを持ち、アドレスをデコードする。
+  ポートは従来の `cpu_top` と同じ
+
+### データバス
+
+ハートは EX ステージから 1 度に 1 つの要求を出し、完了するまで
+`dbus_addr` / `dbus_wdata` / `dbus_we` / `dbus_funct3` を保持します。
+
+| 信号 | 向き | 意味 |
+|:--|:--|:--|
+| `dbus_req` | ハート→SoC | ロード/ストアが受け付け待ち |
+| `dbus_gnt` | SoC→ハート | 次のクロックで要求を受け付ける。ストアはこれで完了 |
+| `dbus_rvalid` / `dbus_rdata` | SoC→ハート | 受け付けたロードのデータ (サイズ・符号拡張済み) |
+
+今の SoC はマスタが 1 つで全スレーブが固定 1 サイクルなので、`dbus_gnt` = 1、
+`dbus_rvalid` は受け付けの 1 サイクル後です (ストア 1 サイクル / ロード 2 サイクルで従来と同じ)。
+`cpu_top` の `BUS_STRESS` パラメータ (シミュレーション専用) を 1 にすると、`dbus_gnt` と
+`dbus_rvalid` が擬似乱数で待たされます。`sim/tb_bus_stress.v` はこの状態で `trap_test.hex` を
+実行し、ハートが待ちサイクルに依存しないことを確認します。
+
 ## ディレクトリ構成
 
 ```
@@ -161,7 +187,8 @@ RISC_V_fpga/
 ├── src/                      # Verilog ソース
 │   ├── riscv_defines.vh      # 共通定義 (唯一の定義元。sim からは -I src で参照)
 │   ├── fpga_top.v            # FPGA トップ (CPU + board_io + LED表示)
-│   ├── cpu_top.v             # 3段パイプライン CPU 本体
+│   ├── cpu_top.v             # CPU (SoC): ハート + 命令ROM・データRAM・UART・タイマ
+│   ├── rv_core.v             # ハート本体 (3段パイプライン + CSR)。メモリとはバスで接続
 │   ├── instruction_memory.v  # 命令ROM 32KB (BSRAM, $readmemh で初期化)
 │   ├── instruction_decoder.v # デコーダ
 │   ├── control_unit.v        # PC選択・ALU入力A選択
