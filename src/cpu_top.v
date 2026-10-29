@@ -383,9 +383,6 @@ module cpu_top #(
     wire mmio_timer_sel;
     //       0x8000_0200 = hart run control
     wire mmio_hartctl_sel      = (dbus_addr == 32'h8000_0200);
-    wire mmio_sel              = mmio_uart_tx_sel || mmio_uart_stat_sel ||
-                                 mmio_uart_rx_sel || mmio_uart_rx_stat_sel ||
-                                 mmio_timer_sel   || mmio_hartctl_sel;
 
     // Load data is used one cycle after the address is formed (the load's data
     // cycle), and the hart holds the address in between, so the address decode
@@ -413,10 +410,16 @@ module cpu_top #(
 
     // A hart never puts a trapping load or store on the bus, so everything
     // below can act on wr_en / bus_rd as they are.
+    //
+    // mem_write_en / mem_read_en flag every store / load, including ones to
+    // the internal RAM, ROM, UART and timer. External devices already compare
+    // the full address against their own registers, and gating the enables
+    // with the internal decode here put two address compares in a row in
+    // front of every external register's write enable.
     assign mem_addr       = dbus_addr;
     assign mem_write_data = wr_data;
-    assign mem_write_en   = wr_en && !dmem_sel && !mmio_sel;
-    assign mem_read_en    = rd_active && !dmem_sel && !mmio_sel;
+    assign mem_write_en   = wr_en;
+    assign mem_read_en    = rd_active;
 
     // =========================================================================
     // UART TX MMIO

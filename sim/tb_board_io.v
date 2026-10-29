@@ -10,6 +10,8 @@ module tb_board_io;
     reg write_en;
     reg read_en;
     reg [7:0] kbd_col;
+    reg usbkey_valid;
+    wire usbkey_pop;
     wire [31:0] read_data;
     wire led_ctrl;
     wire [7:0] kbd_row;
@@ -25,10 +27,10 @@ module tb_board_io;
         .read_en    (read_en),
         .user_btn   (user_btn),
         .kbd_col    (kbd_col),
-        .usbkey_valid     (1'b0),
-        .usbkey_index     (6'd0),
-        .usbkey_connected (1'b0),
-        .usbkey_pop       (),
+        .usbkey_valid     (usbkey_valid),
+        .usbkey_index     (6'd42),
+        .usbkey_connected (1'b1),
+        .usbkey_pop       (usbkey_pop),
         .read_data  (read_data),
         .led_ctrl   (led_ctrl),
         .kbd_row    (kbd_row),
@@ -47,6 +49,7 @@ module tb_board_io;
         write_en = 0;
         read_en = 0;
         kbd_col = 8'hFF;
+        usbkey_valid = 1;
 
         #25;
         rst_n = 1;
@@ -141,6 +144,53 @@ module tb_board_io;
         #1;
         if (read_data !== 32'hDEAD_BEEF) begin
             $display("FAIL: LED_GREEN_LO readback = %h", read_data);
+            $finish;
+        end
+        read_en = 0;
+
+        // USB keyboard event: read reports connected + valid + index
+        addr = 32'h8000_0040;
+        read_en = 1;
+        @(posedge clk);
+        #1;
+        if (read_data !== 32'h0000_032A) begin
+            $display("FAIL: USBKEY read = %h, expected 0000032A", read_data);
+            $finish;
+        end
+        read_en = 0;
+        if (usbkey_pop !== 1'b0) begin
+            $display("FAIL: usbkey_pop asserted without a write");
+            $finish;
+        end
+
+        // Write pops the event: the pop is registered, so it pulses for
+        // exactly the clock after the store
+        write_en = 1;
+        @(posedge clk);
+        #1;
+        write_en = 0;
+        if (usbkey_pop !== 1'b1) begin
+            $display("FAIL: usbkey_pop not asserted the clock after the store");
+            $finish;
+        end
+        // A read in the pop clock must not report the event being consumed
+        // (usb_keyboard still shows it until this edge)
+        read_en = 1;
+        @(posedge clk);
+        #1;
+        if (usbkey_pop !== 1'b0) begin
+            $display("FAIL: usbkey_pop longer than one clock");
+            $finish;
+        end
+        if (read_data[8] !== 1'b0 || read_data[9] !== 1'b1) begin
+            $display("FAIL: USBKEY read during pop = %h, expected valid = 0", read_data);
+            $finish;
+        end
+        // Next read sees usb_keyboard's state again
+        @(posedge clk);
+        #1;
+        if (read_data[8] !== 1'b1) begin
+            $display("FAIL: USBKEY read after pop = %h, expected valid = 1", read_data);
             $finish;
         end
         read_en = 0;
