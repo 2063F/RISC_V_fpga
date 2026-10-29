@@ -3,21 +3,49 @@
 // Module Name: cpu_top
 // Project Name: RISC-V RV32IM CPU
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
-// Description: The CPU as the rest of the board sees it: one hart (rv_core.v)
-//              plus the memories and devices it reaches over its buses.
+// Description: The CPU as the rest of the board sees it: one or two harts
+//              (rv_core.v) plus the memories and devices they reach over a
+//              shared data bus.
 //
-//   0x0000_0000 - 0x0000_7FFF  instruction ROM (fetch on port A, .rodata on B)
+//   0x0000_0000 - 0x0000_7FFF  instruction ROM (see "Second hart" below)
 //   0x0001_0000 - 0x0001_7FFF  data RAM
 //   0x8000_0010 - 0x8000_001C  UART
-//   0x8000_0100 - 0x8000_011F  machine timer (hart 0's block, see timer.v)
+//   0x8000_0100 - 0x8000_013F  machine timer, 0x20 bytes per hart (timer.v)
+//   0x8000_0200                hart run control (see "Second hart" below)
 //   anything else              mem_* port (board_io in fpga_top.v)
 //
-// The hart's data bus protocol is described in rv_core.v. Every slave here
-// answers a load exactly one cycle after accepting it, so the bus accepts
-// every request at once (dbus_gnt = 1) and dbus_rvalid is that request
-// delayed by a cycle. The hart holds the address and funct3 through the load's
-// data cycle, and the slaves use them there: data_memory sizes the word with
-// funct3, and the read select below is registered from the address.
+// Data bus
+// --------
+// The harts' bus protocol is described in rv_core.v. Every slave here answers
+// a load exactly one cycle after accepting it, and reads its address and
+// funct3 again in that data cycle (data_memory sizes the word with funct3, and
+// the read select below is registered from the address). So the bus is shared
+// by holding it for the whole of a load: one request is accepted per cycle,
+// none while a load is waiting for its data, and the address mux stays on the
+// load's owner until the data has been handed over. A store takes one cycle,
+// a load two, whichever hart issues it.
+//
+// When both harts ask in the same cycle, the one that did not win last time
+// goes first (round robin), so neither can starve the other.
+//
+// With no other memory traffic in between, two requests from different harts
+// are performed in the order the bus accepts them, and each hart's own
+// accesses in program order: memory is sequentially consistent, so FENCE has
+// nothing to do.
+//
+// Second hart
+// -----------
+// The ROM has two ports. Port A always fetches for hart 0; port B reads
+// .rodata for both harts at first, and is handed to hart 1 as its fetch port
+// when hart 1 starts. Hart 1 is held in reset until hart 0 sets bit 1 of the
+// run control register at 0x8000_0200 (bit 0, hart 0, always reads 1), and is
+// put back in reset if the bit is cleared again.
+//
+// While hart 1 runs, data loads from the ROM read as 0. A program that starts
+// hart 1 must therefore not keep constants in the ROM: tools/link_mp.ld puts
+// .rodata in RAM, and tools/crt0.S copies it there, from the ROM, before main
+// runs - that is, before hart 1 can have been started. A program that never
+// starts hart 1 sees no difference from a single-hart CPU.
 //
 // Dependencies: riscv_defines.vh, rv_core.v, instruction_memory.v,
 //               data_memory.v, uart_tx.v, uart_rx.v, timer.v
@@ -28,6 +56,7 @@
 module cpu_top #(
     parameter INIT_FILE = "",
     parameter integer TIMER_DIV = 50,   // clocks per mtime tick (50 MHz -> 1 us)
+    parameter integer NUM_HARTS = 1,    // 1 or 2
     parameter integer BUS_STRESS = 0    // simulation only: random bus wait states
 ) (
     input  wire        clk,
@@ -44,69 +73,123 @@ module cpu_top #(
     output wire        uart_tx_pin,
     input  wire        uart_rx_pin,
 
-    // Debug ports
+    // Debug ports (hart 0)
     output wire [31:0] debug_pc,
     output wire [31:0] debug_x1
 );
 
-    // =========================================================================
-    // Hart
-    // =========================================================================
-    wire [31:0] ibus_addr;
-    wire        ibus_ce;
-    wire [31:0] ibus_rdata;
-    wire        ibus_valid;
+    localparam integer HARTS = (NUM_HARTS > 1) ? 2 : 1;
 
-    wire        dbus_req;
+    // =========================================================================
+    // Harts
+    // =========================================================================
+    // Hart 0's fetch port
+    wire [31:0] ibus0_addr;
+    wire        ibus0_ce;
+    wire [31:0] ibus0_rdata;
+    wire        ibus0_valid;
+
+    // Each hart's side of the data bus
+    wire        dbus0_req,    dbus1_req;
+    wire        dbus0_we,     dbus1_we;
+    wire [31:0] dbus0_addr,   dbus1_addr;
+    wire [31:0] dbus0_wdata,  dbus1_wdata;
+    wire [2:0]  dbus0_funct3, dbus1_funct3;
+    wire        dbus0_gnt,    dbus1_gnt;
+    wire        dbus0_rvalid, dbus1_rvalid;
+
+    // The shared bus, as the slaves see it
     wire        dbus_we;
     wire [31:0] dbus_addr;
     wire [31:0] dbus_wdata;
     wire [2:0]  dbus_funct3;
-    wire        dbus_gnt;
     wire        dbus_rvalid;
     wire [31:0] dbus_rdata;
 
-    wire        uart_rx_ready;
-    wire [63:0] mtime;
-    wire        irq_timer, irq_soft;
+    wire              uart_rx_ready;
+    wire [63:0]       mtime;
+    wire [HARTS-1:0]  irq_timer, irq_soft;
 
     rv_core #(
         .HART_ID (0)
     ) core0 (
         .clk         (clk),
         .rst_n       (rst_n),
-        .ibus_addr   (ibus_addr),
-        .ibus_ce     (ibus_ce),
-        .ibus_rdata  (ibus_rdata),
-        .ibus_valid  (ibus_valid),
-        .dbus_req    (dbus_req),
-        .dbus_we     (dbus_we),
-        .dbus_addr   (dbus_addr),
-        .dbus_wdata  (dbus_wdata),
-        .dbus_funct3 (dbus_funct3),
-        .dbus_gnt    (dbus_gnt),
-        .dbus_rvalid (dbus_rvalid),
+        .ibus_addr   (ibus0_addr),
+        .ibus_ce     (ibus0_ce),
+        .ibus_rdata  (ibus0_rdata),
+        .ibus_valid  (ibus0_valid),
+        .dbus_req    (dbus0_req),
+        .dbus_we     (dbus0_we),
+        .dbus_addr   (dbus0_addr),
+        .dbus_wdata  (dbus0_wdata),
+        .dbus_funct3 (dbus0_funct3),
+        .dbus_gnt    (dbus0_gnt),
+        .dbus_rvalid (dbus0_rvalid),
         .dbus_rdata  (dbus_rdata),
         // The machine external interrupt is the UART receiver: it is pending
         // while a received byte is waiting, and reading UART RX data clears it.
+        // It goes to hart 0 only.
         .irq_ext     (uart_rx_ready),
-        .irq_timer   (irq_timer),
-        .irq_soft    (irq_soft),
+        .irq_timer   (irq_timer[0]),
+        .irq_soft    (irq_soft[0]),
         .mtime       (mtime),
         .debug_pc    (debug_pc),
         .debug_x1    (debug_x1)
     );
 
+    // Run control: hart 1 is held in reset while hart1_run is 0.
+    reg  hart1_run;
+    wire [31:0] rom_b_dout;
+    wire        rom_b_valid;
+    wire [31:0] ibus1_addr;
+    wire        ibus1_ce;
+
+    generate
+        if (HARTS > 1) begin : g_hart1
+            rv_core #(
+                .HART_ID (1)
+            ) core1 (
+                .clk         (clk),
+                .rst_n       (rst_n && hart1_run),
+                .ibus_addr   (ibus1_addr),
+                .ibus_ce     (ibus1_ce),
+                .ibus_rdata  (rom_b_dout),
+                .ibus_valid  (rom_b_valid),
+                .dbus_req    (dbus1_req),
+                .dbus_we     (dbus1_we),
+                .dbus_addr   (dbus1_addr),
+                .dbus_wdata  (dbus1_wdata),
+                .dbus_funct3 (dbus1_funct3),
+                .dbus_gnt    (dbus1_gnt),
+                .dbus_rvalid (dbus1_rvalid),
+                .dbus_rdata  (dbus_rdata),
+                .irq_ext     (1'b0),
+                .irq_timer   (irq_timer[HARTS-1]),
+                .irq_soft    (irq_soft[HARTS-1]),
+                .mtime       (mtime),
+                .debug_pc    (),
+                .debug_x1    ()
+            );
+        end else begin : g_no_hart1
+            assign ibus1_addr   = 32'd0;
+            assign ibus1_ce     = 1'b1;
+            assign dbus1_req    = 1'b0;
+            assign dbus1_we     = 1'b0;
+            assign dbus1_addr   = 32'd0;
+            assign dbus1_wdata  = 32'd0;
+            assign dbus1_funct3 = 3'd0;
+        end
+    endgenerate
+
     // =========================================================================
-    // Data bus handshake
+    // Data bus arbitration and handshake
     // =========================================================================
-    // A single master and fixed-latency slaves: accept at once, answer loads
-    // one cycle later.
-    //
-    // BUS_STRESS (testbenches only) instead accepts requests and releases load
-    // data on pseudo-random cycles. That works with the slaves as they are:
-    // they read every cycle while rd_active holds, and the hart keeps the
-    // address steady, so the data is still right whenever it is let through.
+    // BUS_STRESS (testbenches only) accepts requests and releases load data on
+    // pseudo-random cycles on top of the arbitration. That works with the
+    // slaves as they are: they read every cycle while rd_active holds, and the
+    // owner keeps the address steady, so the data is still right whenever it
+    // is let through.
     wire gnt_ok, rsp_ok;
 
     generate
@@ -124,22 +207,52 @@ module cpu_top #(
         end
     endgenerate
 
-    assign dbus_gnt = gnt_ok;
-
-    wire bus_wr = dbus_req && dbus_gnt &&  dbus_we;
-    wire bus_rd = dbus_req && dbus_gnt && !dbus_we;
-
     // A load is outstanding from the cycle after it is accepted until its data
-    // is handed over.
+    // is handed over; rd_owner1 says whose it is. Nothing else is accepted
+    // meanwhile.
     reg rd_outstanding;
+    reg rd_owner1;
+    reg last_win1;      // the last accepted request was hart 1's
+
+    // Hart 1 wins when it asks alone, or when both ask and it is its turn.
+    wire win1     = dbus1_req && (!dbus0_req || !last_win1);
+    wire bus_free = !rd_outstanding && gnt_ok;
+
+    // The grants need not include the hart's own request: a hart only looks
+    // at its grant while it is asking.
+    assign dbus0_gnt = bus_free && !win1;
+    assign dbus1_gnt = bus_free &&  win1;
+
+    // While a load waits for its data the mux stays on its owner.
+    wire sel1 = rd_outstanding ? rd_owner1 : win1;
+
+    wire dbus_req    = (dbus0_req || dbus1_req) && bus_free;  // accepted this cycle
+    assign dbus_we     = sel1 ? dbus1_we     : dbus0_we;
+    assign dbus_addr   = sel1 ? dbus1_addr   : dbus0_addr;
+    assign dbus_wdata  = sel1 ? dbus1_wdata  : dbus0_wdata;
+    assign dbus_funct3 = sel1 ? dbus1_funct3 : dbus0_funct3;
+
+    wire bus_wr = dbus_req &&  dbus_we;
+    wire bus_rd = dbus_req && !dbus_we;
+
     always @(posedge clk) begin
-        if (!rst_n)           rd_outstanding <= 1'b0;
-        else if (bus_rd)      rd_outstanding <= 1'b1;
-        else if (dbus_rvalid) rd_outstanding <= 1'b0;
+        if (!rst_n) begin
+            rd_outstanding <= 1'b0;
+            rd_owner1      <= 1'b0;
+            last_win1      <= 1'b0;
+        end else begin
+            if (bus_rd)           rd_outstanding <= 1'b1;
+            else if (dbus_rvalid) rd_outstanding <= 1'b0;
+
+            if (bus_rd)   rd_owner1 <= win1;
+            if (dbus_req) last_win1 <= win1;
+        end
     end
 
-    assign dbus_rvalid = rd_outstanding && rsp_ok;
-    wire   rd_active   = bus_rd || rd_outstanding;
+    assign dbus_rvalid  = rd_outstanding && rsp_ok;
+    assign dbus0_rvalid = dbus_rvalid && !rd_owner1;
+    assign dbus1_rvalid = dbus_rvalid &&  rd_owner1;
+    wire   rd_active    = bus_rd || rd_outstanding;
 
     // =========================================================================
     // Memory Interface / Address Decoding Outputs
@@ -156,11 +269,13 @@ module cpu_top #(
     wire mmio_uart_stat_sel    = (dbus_addr == 32'h8000_0014);
     wire mmio_uart_rx_sel      = (dbus_addr == 32'h8000_0018);
     wire mmio_uart_rx_stat_sel = (dbus_addr == 32'h8000_001C);
-    //       0x8000_0100 - 0x8000_011F = machine timer (see timer.v)
+    //       0x8000_0100 - 0x8000_013F = machine timer (see timer.v)
     wire mmio_timer_sel;
+    //       0x8000_0200 = hart run control
+    wire mmio_hartctl_sel      = (dbus_addr == 32'h8000_0200);
     wire mmio_sel              = mmio_uart_tx_sel || mmio_uart_stat_sel ||
                                  mmio_uart_rx_sel || mmio_uart_rx_stat_sel ||
-                                 mmio_timer_sel;
+                                 mmio_timer_sel   || mmio_hartctl_sel;
 
     // Load data is used one cycle after the address is formed (the load's data
     // cycle), and the hart holds the address in between, so the address decode
@@ -172,6 +287,7 @@ module cpu_top #(
     // cycle.
     reg       ld_dmem_q, ld_imem_q;
     reg       ld_uart_stat_q, ld_uart_rx_q, ld_uart_rx_stat_q, ld_timer_q;
+    reg       ld_hartctl_q;
     reg [1:0] ld_offset_q;
 
     always @(posedge clk) begin
@@ -181,10 +297,11 @@ module cpu_top #(
         ld_uart_rx_q      <= mmio_uart_rx_sel;
         ld_uart_rx_stat_q <= mmio_uart_rx_stat_sel;
         ld_timer_q        <= mmio_timer_sel;
+        ld_hartctl_q      <= mmio_hartctl_sel;
         ld_offset_q       <= dbus_addr[1:0];
     end
 
-    // The hart never puts a trapping load or store on the bus, so everything
+    // A hart never puts a trapping load or store on the bus, so everything
     // below can act on bus_wr / bus_rd as they are.
     assign mem_addr       = dbus_addr;
     assign mem_write_data = dbus_wdata;
@@ -224,13 +341,23 @@ module cpu_top #(
     );
 
     // =========================================================================
+    // Hart run control MMIO
+    // =========================================================================
+    always @(posedge clk) begin
+        if (!rst_n)
+            hart1_run <= 1'b0;
+        else if (bus_wr && mmio_hartctl_sel)
+            hart1_run <= (HARTS > 1) && dbus_wdata[1];
+    end
+
+    // =========================================================================
     // Machine timer MMIO
     // =========================================================================
     wire [31:0] timer_read_data;
 
     timer #(
         .DIV       (TIMER_DIV),
-        .NUM_HARTS (1)
+        .NUM_HARTS (HARTS)
     ) timer_inst (
         .clk        (clk),
         .rst_n      (rst_n),
@@ -248,20 +375,23 @@ module cpu_top #(
     // Memories
     // =========================================================================
 
-    // Instruction ROM. Port A fetches for the hart, port B reads .rodata.
-    wire [31:0] rom_data_read;
-
+    // Instruction ROM. Port A fetches for hart 0. Port B reads .rodata, or
+    // fetches for hart 1 while it runs (see the top of this file).
     instruction_memory #(
         .INIT_FILE (INIT_FILE)
     ) imem (
-        .clk        (clk),
-        .ce         (ibus_ce),
-        .addr       (ibus_addr),
-        .dout       (ibus_rdata),
-        .dout_valid (ibus_valid),
-        .addr_b     (dbus_addr),
-        .dout_b     (rom_data_read)
+        .clk          (clk),
+        .ce           (ibus0_ce),
+        .addr         (ibus0_addr),
+        .dout         (ibus0_rdata),
+        .dout_valid   (ibus0_valid),
+        .ce_b         (hart1_run ? ibus1_ce   : 1'b1),
+        .addr_b       (hart1_run ? ibus1_addr : dbus_addr),
+        .dout_b       (rom_b_dout),
+        .dout_b_valid (rom_b_valid)
     );
+
+    wire [31:0] rom_data_read = (rom_b_valid && !hart1_run) ? rom_b_dout : 32'd0;
 
     // Data RAM
     wire [31:0] internal_mem_read_data;
@@ -328,6 +458,8 @@ module cpu_top #(
             selected_mem_data = {31'd0, uart_rx_ready};
         end else if (ld_timer_q) begin
             selected_mem_data = timer_read_data;
+        end else if (ld_hartctl_q) begin
+            selected_mem_data = {30'd0, hart1_run, 1'b1};
         end else begin
             selected_mem_data = mem_read_data;
         end

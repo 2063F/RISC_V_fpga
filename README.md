@@ -63,6 +63,7 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 | 8 | 3段パイプライン化 + フォワーディング | ✅ |
 | 9 | CSR / 例外 / 割り込み | ✅ |
 | 10+ | SDRAM | 🔧 作業中 |
+| 11 | マルチコア (2ハート) | 🔧 作業中 (排他命令は未実装) |
 
 ## ISA
 
@@ -97,7 +98,7 @@ EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO へ�
 | `mcycle` / `minstret` (+`h`) | 64ビットカウンタ (書き込み可) |
 | `cycle` / `time` / `instret` (+`h`) | 読み出し専用。`time` はタイマの `mtime` |
 | `mvendorid` / `marchid` / `mimpid` | すべて 0 |
-| `mhartid` | ハート番号 (`rv_core` の `HART_ID` パラメータ。現在は 0 のみ) |
+| `mhartid` | ハート番号 (0 / 1。`rv_core` の `HART_ID` パラメータ) |
 
 未実装の CSR へのアクセスと、読み出し専用 CSR への書き込みは不正命令例外です。
 
@@ -165,12 +166,13 @@ set_csr(mstatus, MSTATUS_MIE);
 
 ## コアと SoC の構成
 
-マルチコア化の準備として、CPU を「ハート」と「SoC」に分けています。
+CPU は「ハート」と「SoC」に分かれています。
 
 - `rv_core.v` : ハート 1 個分 (3段パイプライン・乗除算器・CSR)。メモリや周辺は持たず、
   命令フェッチポートとデータバスだけで外とつながる
-- `cpu_top.v` : SoC。ハート・命令ROM・データRAM・UART・タイマを持ち、アドレスをデコードする。
-  ポートは従来の `cpu_top` と同じ
+- `cpu_top.v` : SoC。ハート (`NUM_HARTS` = 1 または 2)・命令ROM・データRAM・UART・タイマを持ち、
+  データバスの調停とアドレスデコードを行う。ポートは従来の `cpu_top` と同じ。
+  `fpga_top` は `NUM_HARTS` = 2 で使う
 
 ### データバス
 
@@ -183,11 +185,46 @@ set_csr(mstatus, MSTATUS_MIE);
 | `dbus_gnt` | SoC→ハート | 次のクロックで要求を受け付ける。ストアはこれで完了 |
 | `dbus_rvalid` / `dbus_rdata` | SoC→ハート | 受け付けたロードのデータ (サイズ・符号拡張済み) |
 
-今の SoC はマスタが 1 つで全スレーブが固定 1 サイクルなので、`dbus_gnt` = 1、
-`dbus_rvalid` は受け付けの 1 サイクル後です (ストア 1 サイクル / ロード 2 サイクルで従来と同じ)。
+データバスは 2 つのハートで共有します。全スレーブが固定 1 サイクルで答えるので、
+受け付けは 1 サイクルに 1 要求、ロードはデータを返し終わるまでバスを占有します
+(ストア 1 サイクル / ロード 2 サイクルで、1 ハートのときと同じ)。同時に要求が来たときは
+前回受け付けなかった側を優先します (ラウンドロビン)。キャッシュがなく、各ハートのアクセスは
+プログラム順に行われるので、メモリは逐次一貫です (FENCE は不要)。
+
 `cpu_top` の `BUS_STRESS` パラメータ (シミュレーション専用) を 1 にすると、`dbus_gnt` と
 `dbus_rvalid` が擬似乱数で待たされます。`sim/tb_bus_stress.v` はこの状態で `trap_test.hex` を
 実行し、ハートが待ちサイクルに依存しないことを確認します。
+
+### 2 つ目のハート (hart 1)
+
+- hart 1 はリセットされたまま待機し、hart 0 が `0x8000_0200` (ハート起動レジスタ) の bit1 に
+  1 を書くと 0 番地から動き出します (bit1 を 0 に戻すと再びリセット)。bit0 (hart 0) は常に 1
+- 命令ROM は 2 ポートで、ポート A が hart 0 のフェッチ用です。ポート B は hart 1 を起動するまでは
+  従来どおり `.rodata` の読み出しに使い、起動後は hart 1 のフェッチ用に切り替わります。
+  **hart 1 の動作中は ROM からのデータ読み出しが 0 になる**ので、hart 1 を使うプログラムは
+  `tools/link_mp.ld` でリンクして `.rodata` を RAM に置きます (起動時に `crt0.S` がコピー)
+- hart 1 を起動しないプログラムは、2 ハート構成でも 1 ハートのときと完全に同じに動きます
+- `crt0.S` は `mhartid` が 0 以外なら初期化を飛ばし、hart 0 のスタックの
+  `__hart_stack_size` (既定 4 KB) 下に自分のスタックを置いて `hart_main(hartid)` を呼びます
+- UART 受信割り込みは hart 0 にだけ届きます。タイマとソフトウェア割り込みはハートごとです
+- **アトミック命令 (A 拡張) は未実装**です。両方のハートが書き込む変数は、まだ安全に
+  更新できません (片方だけが書くフラグでの受け渡しは可能)
+
+```c
+#include "mp.h"
+
+void hart_main(unsigned int hartid) {   // hart 1 はここから
+    ...
+}
+
+int main(void) {                        // hart 0
+    hart_start(1);
+    ...
+}
+```
+
+`examples/multicore_demo.c` が使用例です。2 ハートの同時メモリアクセス、RAM 上の `.rodata`、
+ハート間のピンポン 1000 往復、コア間割り込みを自己検査し、`sim/tb_multicore.v` で確認しています。
 
 ## ディレクトリ構成
 
@@ -218,14 +255,17 @@ RISC_V_fpga/
 ├── examples/                 # C / アセンブリのサンプルとビルド済み hex
 │   ├── uart.h                # UART MMIO ヘルパ
 │   ├── csr.h                 # CSR アクセス・トラップ定数・タイマ操作
+│   ├── mp.h                  # 2 つ目のハートの起動・停止
+│   ├── multicore_demo.c      # 2 ハートのデモ
 │   ├── loop55.c / loop55.S   # 1+2+...+10 = 55 を LED で確認
 │   ├── button_led.c          # ボタンで LED を切り替え
 │   ├── uart_echo_c.c         # UART エコー
 │   ├── printf_demo.c         # 10進/16進表示、.bss/.rodata、UART RX の総合デモ
 │   └── trap_demo.c           # 例外・タイマ割り込み・UART受信割り込みのデモ
 ├── tools/
-│   ├── crt0.S                # スタートアップ (.data コピー, .bss クリア)
+│   ├── crt0.S                # スタートアップ (.data コピー, .bss クリア, hart 1 の入口)
 │   ├── link.ld               # リンカスクリプト (ROM 32KB / RAM 32KB)
+│   ├── link_mp.ld            # hart 1 を使うプログラム用 (.rodata を RAM に置く)
 │   ├── bin2hex.py            # 生バイナリ -> $readmemh 用 hex
 │   ├── assemble_uart_*.py    # src/uart_*.hex を生成する手動アセンブラ
 │   ├── install_riscv_toolchain.ps1 # ツールチェーン検出・導入案内
@@ -369,7 +409,7 @@ PATH への追加コマンドもそのまま貼り付けられる形で表示し
 
 ### 5. ビルドして使う
 
-サンプルは 5 本あります。
+サンプルは 6 本あります。
 
 - `examples/loop55.S`: 1 から 10 までの加算結果 55 を LED で確認するサンプル (`loop55.c` は参考用)
 - `examples/button_led.c`: `user_btn` で `led[1]` を切り替える MMIO サンプル
@@ -377,6 +417,7 @@ PATH への追加コマンドもそのまま貼り付けられる形で表示し
 - `examples/printf_demo.c`: 10進/16進表示、`.bss` / `.rodata`、UART RX まで確認する総合デモ
 - `examples/trap_demo.c`: ECALL と不正命令の例外、500ms ごとのタイマ割り込み (LED[1] 点滅)、
   UART 受信割り込みのデモ
+- `examples/multicore_demo.c`: 2 ハートのデモ (`tools/link_mp.ld` でリンク)
 
 > **`-march=rv32im -mabi=ilp32` は必須です。** 省略すると gcc の既定 multilib
 > (`rv32imac`) が選ばれ、本CPUが未実装の圧縮命令 (C拡張, 16ビット命令) を
@@ -417,6 +458,12 @@ riscv64-unknown-elf-gcc -march=rv32im_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfi
   tools/crt0.S examples/trap_demo.c -o examples/trap_demo.elf
 riscv64-unknown-elf-objcopy -O binary examples/trap_demo.elf examples/trap_demo.bin
 python tools/bin2hex.py examples/trap_demo.bin > examples/trap_demo.hex
+
+# multicore_demo (hart 1 を起動するので link_mp.ld でリンク)
+riscv64-unknown-elf-gcc -march=rv32im_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
+  tools/crt0.S examples/multicore_demo.c -o examples/multicore_demo.elf
+riscv64-unknown-elf-objcopy -O binary examples/multicore_demo.elf examples/multicore_demo.bin
+python tools/bin2hex.py examples/multicore_demo.bin > examples/multicore_demo.hex
 ```
 
 > `crt0.S` が `.data` の ROM→RAM コピーと `.bss` のゼロクリアを行うので、

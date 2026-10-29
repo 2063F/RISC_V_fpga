@@ -17,6 +17,10 @@ __rom_end   = 0x00008000;
 __ram_start = 0x00010000;
 __ram_end   = 0x00018000;
 
+/* Stack size of each hart other than 0 (crt0.S). Only used by programs that
+   start a second hart; override with -Wl,--defsym=__hart_stack_size=... */
+PROVIDE(__hart_stack_size = 0x1000);
+
 SECTIONS {
     . = __rom_start;
 
