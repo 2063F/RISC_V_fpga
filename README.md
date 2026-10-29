@@ -13,6 +13,8 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 
 - RV32I の基本演算、即値演算、分岐、ジャンプ、ロード/ストアを実装済み
 - RV32M の乗算・除算命令を実装済み (多サイクル: 乗算3サイクル / 除算34サイクル)
+- A 拡張 (LR.W / SC.W / AMO*.W) を実装済み ([詳細](#アトミック命令-a-拡張))
+- 2 ハート (デュアルコア) 構成。データバスを共有 ([詳細](#2-つ目のハート-hart-1))
 - Scratch RAM と UART TX/RX の MMIO を接続済み
 - 3段パイプライン化（フェッチ / デコード+レジスタ読み出し / 実行+書き戻し）
 - EX から ID へのフォワーディングでデータハザードを解決
@@ -29,6 +31,9 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
     16進変換、UART RX のエコーまで一通り動作
   - `uart_echo_c` : 起動メッセージのあとエコーループ。1文字ずつ10回、
     および20文字連続 (15ms間隔) を取りこぼしなくエコーすることを確認
+  - `multicore_demo` : 2 ハート構成で `ALL OK` まで出力。2 ハート同時のメモリアクセス、
+    RAM 上の `.rodata`、ピンポン 1000 往復、AMOADD / LR・SC / スピンロックでの
+    共有カウンタ同時更新、コア間割り込みがすべて期待どおり
 
 ### 実測値 (printf_demo.hex で合成)
 
@@ -47,7 +52,7 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 
 > **注意: 本CPUは C拡張 (圧縮命令) を実装していません。**
 > C をビルドするときは必ず `-march=rv32im -mabi=ilp32` を指定してください
-> (CSR を使うコードは `-march=rv32im_zicsr`)。
+> (CSR を使うコードは `-march=rv32im_zicsr`、アトミック命令を使うコードは `rv32ima`)。
 
 ## 開発ロードマップ
 
@@ -63,16 +68,19 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 | 8 | 3段パイプライン化 + フォワーディング | ✅ |
 | 9 | CSR / 例外 / 割り込み | ✅ |
 | 10+ | SDRAM | 🔧 作業中 |
+| 11 | マルチコア (2ハート) + A拡張 | ✅ (実機確認済み。2ハート構成のタイミングは未計測) |
 
 ## ISA
 
-- **ベース**: RV32I + M / Zicsr / Zifencei (RV32IM_Zicsr_Zifencei)、マシンモードのみ
+- **ベース**: RV32I + M / A / Zicsr / Zifencei (RV32IMA_Zicsr_Zifencei)、マシンモードのみ
 - **レジスタ**: 32本 × 32ビット (x0 = 常に0)
 - **命令長**: 固定 32ビット (C拡張の圧縮命令は未対応)
-- **実装済み命令**: 57
+- **実装済み命令**: 68
   - RV32I 40命令: LUI, AUIPC, JAL, JALR, 分岐6, ロード5, ストア3,
     即値演算9, レジスタ間演算10, FENCE, ECALL, EBREAK
   - M拡張 8命令: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU
+  - A拡張 11命令: LR.W, SC.W, AMOSWAP.W, AMOADD.W, AMOXOR.W, AMOAND.W, AMOOR.W,
+    AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W
   - Zicsr 6命令: CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI
   - 特権命令: MRET, WFI / Zifencei: FENCE.I
 - FENCE / FENCE.I / WFI は何もしない命令として実行します (キャッシュが無く、
@@ -90,13 +98,14 @@ EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO へ�
 | CSR | 内容 |
 |:--|:--|
 | `mstatus` | MIE (bit3), MPIE (bit7)。MPP (bit12:11) は常に 11 |
-| `misa` | `0x40001100` (RV32IM)。書き込みは無視 |
+| `misa` | `0x40001101` (RV32IMA)。書き込みは無視 |
 | `mie` / `mip` | MSIE/MSIP (bit3), MTIE/MTIP (bit7), MEIE/MEIP (bit11)。`mip` は読み出し専用で割り込み線の状態を映す |
 | `mtvec` | BASE + MODE (0: direct, 1: vectored。vectored では割り込み N を BASE+4N へ) |
 | `mscratch` / `mepc` / `mcause` / `mtval` | トラップ用 |
 | `mcycle` / `minstret` (+`h`) | 64ビットカウンタ (書き込み可) |
 | `cycle` / `time` / `instret` (+`h`) | 読み出し専用。`time` はタイマの `mtime` |
-| `mvendorid` / `marchid` / `mimpid` / `mhartid` | すべて 0 |
+| `mvendorid` / `marchid` / `mimpid` | すべて 0 |
+| `mhartid` | ハート番号 (0 / 1。`rv_core` の `HART_ID` パラメータ) |
 
 未実装の CSR へのアクセスと、読み出し専用 CSR への書き込みは不正命令例外です。
 
@@ -127,11 +136,19 @@ EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO へ�
 
 ### タイマ (MMIO, ワードアクセスのみ)
 
-| アドレス | レジスタ |
+ハートごとに 32 バイトのブロックを持ち、ハート h のブロックは `0x8000_0100 + 0x20*h` です
+(最大 8 ハート)。ハート 0 のブロックは従来のタイマと同じアドレスなので、既存のプログラムは
+そのまま動きます。
+
+| オフセット | レジスタ |
 |:--|:--|
-| `0x8000_0100` | `msip` (bit0) |
-| `0x8000_0108` / `0x8000_010C` | `mtimecmp` 下位 / 上位 |
-| `0x8000_0110` / `0x8000_0114` | `mtime` 下位 / 上位 |
+| `+0x00` | `msip` (bit0)。そのハートのソフトウェア割り込み |
+| `+0x08` / `+0x0C` | `mtimecmp` 下位 / 上位。そのハートのタイマ割り込み |
+| `+0x10` / `+0x14` | `mtime` 下位 / 上位。全ハート共通のカウンタで、どのブロックからも読み書きできる |
+
+どのハートもすべてのブロックに書き込めるので、他のハートの `msip` を 1 にすれば
+そのハートに割り込みをかけられます (コア間割り込み)。`csr.h` の `send_ipi()` /
+`timer_set_cmp_of()` が使えます (`timer_set_cmp()` は自分のハートの `mtimecmp` を設定します)。
 
 `mtime` は `cpu_top` の `TIMER_DIV` クロック (既定 50) ごとに 1 進むので、
 50 MHz ではマイクロ秒カウンタになります。`mtimecmp` のリセット値は全ビット 1 です。
@@ -154,6 +171,86 @@ set_csr(mstatus, MSTATUS_MIE);
 > リセット直後の `mtvec` は 0 なので、ハンドラを設定する前にトラップが起きると
 > リセットベクタ (0番地) に戻ってプログラムが最初からやり直しになります。
 
+## コアと SoC の構成
+
+CPU は「ハート」と「SoC」に分かれています。
+
+- `rv_core.v` : ハート 1 個分 (3段パイプライン・乗除算器・CSR)。メモリや周辺は持たず、
+  命令フェッチポートとデータバスだけで外とつながる
+- `cpu_top.v` : SoC。ハート (`NUM_HARTS` = 1 または 2)・命令ROM・データRAM・UART・タイマを持ち、
+  データバスの調停とアドレスデコードを行う。ポートは従来の `cpu_top` と同じ。
+  `fpga_top` は `NUM_HARTS` = 2 で使う
+
+### データバス
+
+ハートは EX ステージから 1 度に 1 つの要求を出し、完了するまで
+`dbus_addr` / `dbus_wdata` / `dbus_we` / `dbus_funct3` を保持します。
+
+| 信号 | 向き | 意味 |
+|:--|:--|:--|
+| `dbus_req` | ハート→SoC | ロード/ストアが受け付け待ち |
+| `dbus_gnt` | SoC→ハート | 次のクロックで要求を受け付ける。ストアはこれで完了 |
+| `dbus_rvalid` / `dbus_rdata` | SoC→ハート | 受け付けたロードのデータ (サイズ・符号拡張済み) |
+
+データバスは 2 つのハートで共有します。全スレーブが固定 1 サイクルで答えるので、
+受け付けは 1 サイクルに 1 要求、ロードはデータを返し終わるまでバスを占有します
+(ストア 1 サイクル / ロード 2 サイクルで、1 ハートのときと同じ)。同時に要求が来たときは
+前回受け付けなかった側を優先します (ラウンドロビン)。キャッシュがなく、各ハートのアクセスは
+プログラム順に行われるので、メモリは逐次一貫です (FENCE は不要)。
+
+`cpu_top` の `BUS_STRESS` パラメータ (シミュレーション専用) を 1 にすると、`dbus_gnt` と
+`dbus_rvalid` が擬似乱数で待たされます。`sim/tb_bus_stress.v` はこの状態で `trap_test.hex` を
+実行し、ハートが待ちサイクルに依存しないことを確認します。
+
+### 2 つ目のハート (hart 1)
+
+- hart 1 はリセットされたまま待機し、hart 0 が `0x8000_0200` (ハート起動レジスタ) の bit1 に
+  1 を書くと 0 番地から動き出します (bit1 を 0 に戻すと再びリセット)。bit0 (hart 0) は常に 1
+- 命令ROM は 2 ポートで、ポート A が hart 0 のフェッチ用です。ポート B は hart 1 を起動するまでは
+  従来どおり `.rodata` の読み出しに使い、起動後は hart 1 のフェッチ用に切り替わります。
+  **hart 1 の動作中は ROM からのデータ読み出しが 0 になる**ので、hart 1 を使うプログラムは
+  `tools/link_mp.ld` でリンクして `.rodata` を RAM に置きます (起動時に `crt0.S` がコピー)
+- hart 1 を起動しないプログラムは、2 ハート構成でも 1 ハートのときと完全に同じに動きます
+- `crt0.S` は `mhartid` が 0 以外なら初期化を飛ばし、hart 0 のスタックの
+  `__hart_stack_size` (既定 4 KB) 下に自分のスタックを置いて `hart_main(hartid)` を呼びます
+- UART 受信割り込みは hart 0 にだけ届きます。タイマとソフトウェア割り込みはハートごとです
+- 両方のハートが書き込む変数は、アトミック命令 (下記) で更新します
+
+```c
+#include "mp.h"
+
+void hart_main(unsigned int hartid) {   // hart 1 はここから
+    ...
+}
+
+int main(void) {                        // hart 0
+    hart_start(1);
+    ...
+}
+```
+
+`examples/multicore_demo.c` が使用例です。2 ハートの同時メモリアクセス、RAM 上の `.rodata`、
+ハート間のピンポン 1000 往復、共有カウンタの同時更新 (AMOADD / LR・SC / AMOSWAP の
+スピンロック)、コア間割り込みを自己検査し、`sim/tb_multicore.v` で確認しています。
+
+### アトミック命令 (A 拡張)
+
+LR.W / SC.W / AMO*.W はハートからは「操作つきのロード」として 1 回だけバスに出し、
+SoC (`cpu_top.v`) が読み出し・演算・書き込みをバスを占有したまま実行します。
+その間は他のハートのアクセスが入らないので、AMO は不可分です。
+
+| 命令 | サイクル数 (待ちなし) | 動作 |
+|:--|:--|:--|
+| LR.W | 2 (ロードと同じ) | 読み出し、そのハートの予約をそのワードに設定 |
+| SC.W | 4 | 予約が有効なら書き込んで rd = 0、無効なら書かずに rd = 1。どちらでも予約は消える |
+| AMO*.W | 4 | 旧値を rd に返し、演算結果を書き込む |
+
+- 予約はハートごとに 1 ワード単位です。もう一方のハートがそのワードに書き込むと消えます
+- `aq` / `rl` ビットは何もしません (メモリが逐次一貫のため)
+- 非整列アドレスは LR がロード非整列例外 (4)、SC / AMO がストア非整列例外 (6)
+- C からは GCC の `__atomic_*` 組み込み関数がそのまま使えます (`-march=rv32ima_zicsr`)
+- `sim/amo_test.S` (`sim/tb_amo.v`) が全命令の動作と予約の規則を自己検査します
+
 ## ディレクトリ構成
 
 ```
@@ -161,7 +258,8 @@ RISC_V_fpga/
 ├── src/                      # Verilog ソース
 │   ├── riscv_defines.vh      # 共通定義 (唯一の定義元。sim からは -I src で参照)
 │   ├── fpga_top.v            # FPGA トップ (CPU + board_io + LED表示)
-│   ├── cpu_top.v             # 3段パイプライン CPU 本体
+│   ├── cpu_top.v             # CPU (SoC): ハート + 命令ROM・データRAM・UART・タイマ
+│   ├── rv_core.v             # ハート本体 (3段パイプライン + CSR)。メモリとはバスで接続
 │   ├── instruction_memory.v  # 命令ROM 32KB (BSRAM, $readmemh で初期化)
 │   ├── instruction_decoder.v # デコーダ
 │   ├── control_unit.v        # PC選択・ALU入力A選択
@@ -178,18 +276,22 @@ RISC_V_fpga/
 │   ├── blinky.v              # LED点滅テスト (Phase 1)
 │   └── uart_*.s / uart_*.hex # 手書きアセンブリのテストプログラム
 ├── sim/                      # テストベンチ (23本, tb_*.v)
-│   └── trap_test.S / .hex    # tb_trap.v 用の CSR・例外・割り込み自己検査プログラム
+│   ├── trap_test.S / .hex    # tb_trap.v 用の CSR・例外・割り込み自己検査プログラム
+│   └── amo_test.S / .hex     # tb_amo.v 用のアトミック命令自己検査プログラム
 ├── examples/                 # C / アセンブリのサンプルとビルド済み hex
 │   ├── uart.h                # UART MMIO ヘルパ
 │   ├── csr.h                 # CSR アクセス・トラップ定数・タイマ操作
+│   ├── mp.h                  # 2 つ目のハートの起動・停止
+│   ├── multicore_demo.c      # 2 ハートのデモ
 │   ├── loop55.c / loop55.S   # 1+2+...+10 = 55 を LED で確認
 │   ├── button_led.c          # ボタンで LED を切り替え
 │   ├── uart_echo_c.c         # UART エコー
 │   ├── printf_demo.c         # 10進/16進表示、.bss/.rodata、UART RX の総合デモ
 │   └── trap_demo.c           # 例外・タイマ割り込み・UART受信割り込みのデモ
 ├── tools/
-│   ├── crt0.S                # スタートアップ (.data コピー, .bss クリア)
+│   ├── crt0.S                # スタートアップ (.data コピー, .bss クリア, hart 1 の入口)
 │   ├── link.ld               # リンカスクリプト (ROM 32KB / RAM 32KB)
+│   ├── link_mp.ld            # hart 1 を使うプログラム用 (.rodata を RAM に置く)
 │   ├── bin2hex.py            # 生バイナリ -> $readmemh 用 hex
 │   ├── assemble_uart_*.py    # src/uart_*.hex を生成する手動アセンブラ
 │   ├── install_riscv_toolchain.ps1 # ツールチェーン検出・導入案内
@@ -333,7 +435,7 @@ PATH への追加コマンドもそのまま貼り付けられる形で表示し
 
 ### 5. ビルドして使う
 
-サンプルは 5 本あります。
+サンプルは 6 本あります。
 
 - `examples/loop55.S`: 1 から 10 までの加算結果 55 を LED で確認するサンプル (`loop55.c` は参考用)
 - `examples/button_led.c`: `user_btn` で `led[1]` を切り替える MMIO サンプル
@@ -341,6 +443,7 @@ PATH への追加コマンドもそのまま貼り付けられる形で表示し
 - `examples/printf_demo.c`: 10進/16進表示、`.bss` / `.rodata`、UART RX まで確認する総合デモ
 - `examples/trap_demo.c`: ECALL と不正命令の例外、500ms ごとのタイマ割り込み (LED[1] 点滅)、
   UART 受信割り込みのデモ
+- `examples/multicore_demo.c`: 2 ハートのデモ (`tools/link_mp.ld` でリンク)
 
 > **`-march=rv32im -mabi=ilp32` は必須です。** 省略すると gcc の既定 multilib
 > (`rv32imac`) が選ばれ、本CPUが未実装の圧縮命令 (C拡張, 16ビット命令) を
@@ -381,6 +484,12 @@ riscv64-unknown-elf-gcc -march=rv32im_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfi
   tools/crt0.S examples/trap_demo.c -o examples/trap_demo.elf
 riscv64-unknown-elf-objcopy -O binary examples/trap_demo.elf examples/trap_demo.bin
 python tools/bin2hex.py examples/trap_demo.bin > examples/trap_demo.hex
+
+# multicore_demo (hart 1 を起動するので link_mp.ld でリンク。アトミック命令を使うので _a も必要)
+riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
+  tools/crt0.S examples/multicore_demo.c -o examples/multicore_demo.elf
+riscv64-unknown-elf-objcopy -O binary examples/multicore_demo.elf examples/multicore_demo.bin
+python tools/bin2hex.py examples/multicore_demo.bin > examples/multicore_demo.hex
 ```
 
 > `crt0.S` が `.data` の ROM→RAM コピーと `.bss` のゼロクリアを行うので、
@@ -397,6 +506,7 @@ python tools/bin2hex.py examples/trap_demo.bin > examples/trap_demo.hex
   - ボタン/LED の MMIO 確認なら `examples/button_led.hex`
   - UART まで一通り動かすなら `examples/printf_demo.hex`
   - 割り込みまで試すなら `examples/trap_demo.hex`
+  - 2 ハートとアトミック命令を試すなら `examples/multicore_demo.hex`
 2. `src/fpga_top.v` の `INIT_FILE` を使いたい hex に合わせます。
   - 既定値は `examples/loop55.hex` です。
   - `build.tcl` はここから hex のパスを読むので、変更箇所はこの1か所だけです。
@@ -447,6 +557,8 @@ powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Interactive -Sh
   - `printf_demo` / `uart_echo_c` : 115200bps のシリアル端末に出力
   - `trap_demo` : 例外の報告のあと、`led[1]` が 500ms ごとに反転して `tick N` を出力。
     送った文字は `rx 'X'` として返る
+  - `multicore_demo` : 各項目の `ok` のあと `ALL OK` を出力 (2 ハート構成が必要。
+    `fpga_top` は既定で 2 ハート)
 
 > `tools/program.ps1` はビットストリームより新しい `src/*.v` があると警告します。
 > 合成し直さずに古いビットストリームを焼く事故を防ぐためです。

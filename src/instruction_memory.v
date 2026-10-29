@@ -17,7 +17,9 @@
 // NOP itself; cpu_top folds that into the flush mask it already needs.
 //
 // Port B reads .rodata constants. Its data also arrives one cycle late, which
-// the CPU covers with the same one-cycle load stall it uses for the RAM.
+// the CPU covers with the same one-cycle load stall it uses for the RAM. In a
+// two-hart cpu_top, port B becomes the second hart's fetch port once that hart
+// is running, which is what ce_b and dout_b_valid are for (they mirror port A).
 // =============================================================================
 
 module instruction_memory #(
@@ -31,9 +33,11 @@ module instruction_memory #(
     output wire [31:0] dout,        // raw ROM word, NOT masked for range
     output wire        dout_valid,  // 0 = addr was outside the ROM
 
-    // Port B: data read (.rodata constants)
+    // Port B: data read (.rodata constants), or the second hart's fetch
+    input  wire        ce_b,        // clock enable (0 = hold dout_b)
     input  wire [31:0] addr_b,
-    output wire [31:0] dout_b
+    output wire [31:0] dout_b,      // raw ROM word, NOT masked for range
+    output wire        dout_b_valid // 0 = addr_b was outside the ROM
 );
 
     localparam integer WORDS    = 8192;
@@ -44,8 +48,9 @@ module instruction_memory #(
     wire [12:0] word_addr   = addr[14:2];
     wire [12:0] word_addr_b = addr_b[14:2];
 
-    // Out-of-range fetches read as NOP, out-of-range data reads as 0. The range
-    // check is registered alongside the data so it stays aligned with it.
+    // Out-of-range reads are reported, not masked: cpu_top turns them into a
+    // NOP or a fetch fault on the fetch side and into 0 on the data side. The
+    // range check is registered alongside the data so it stays aligned with it.
     wire addr_in_range   = (addr   < 32'h0000_8000);
     wire addr_b_in_range = (addr_b < 32'h0000_8000);
 
@@ -60,8 +65,10 @@ module instruction_memory #(
     end
 
     always @(posedge clk) begin
-        q_b          <= mem[word_addr_b];
-        q_b_in_range <= addr_b_in_range;
+        if (ce_b) begin
+            q_b          <= mem[word_addr_b];
+            q_b_in_range <= addr_b_in_range;
+        end
     end
 
     // Port A hands the raw word and a validity bit to cpu_top, which already
@@ -71,7 +78,8 @@ module instruction_memory #(
     assign dout       = q_a;
     assign dout_valid = q_a_in_range;
 
-    assign dout_b = q_b_in_range ? q_b : 32'h0000_0000;
+    assign dout_b       = q_b;
+    assign dout_b_valid = q_b_in_range;
 
     // =========================================================================
     // ROM contents

@@ -3,53 +3,61 @@
 // Module Name: cpu_top
 // Project Name: RISC-V RV32IM CPU
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
-// Description: Top level CPU: a three-stage pipeline.
+// Description: The CPU as the rest of the board sees it: one or two harts
+//              (rv_core.v) plus the memories and devices they reach over a
+//              shared data bus.
 //
-//   IF  fetch   : PC drives the instruction ROM
-//   ID  decode  : decode, immediate generation, register file read
-//   EX  execute : ALU / multiplier / divider, memory, write-back
+//   0x0000_0000 - 0x0000_7FFF  instruction ROM (see "Second hart" below)
+//   0x0001_0000 - 0x0001_7FFF  data RAM
+//   0x8000_0010 - 0x8000_001C  UART
+//   0x8000_0100 - 0x8000_013F  machine timer, 0x20 bytes per hart (timer.v)
+//   0x8000_0200                hart run control (see "Second hart" below)
+//   anything else              mem_* port (board_io in fpga_top.v)
 //
-// Why three stages
-// ----------------
-// It used to be two, with decode, register read, ALU, memory and write-back all
-// in one cycle. That chain - instruction ROM -> register file 32:1 read mux ->
-// ALU - was the critical path once the multiply and divide had been moved into
-// their own units, and it left only +0.001 ns of slack against the 50 MHz
-// constraint. Splitting the register read away from the ALU gives real margin.
+// Data bus
+// --------
+// The harts' bus protocol is described in rv_core.v. Every slave here answers
+// a load exactly one cycle after accepting it, and reads its address and
+// funct3 again in that data cycle (data_memory sizes the word with funct3, and
+// the read select below is registered from the address). So the bus is shared
+// by holding it for the whole of a load: one request is accepted per cycle,
+// none while a load is waiting for its data, and the address mux stays on the
+// load's owner until the data has been handed over. A store takes one cycle,
+// a load two, whichever hart issues it.
 //
-// The cost is a data hazard: the instruction in ID reads the register file in
-// the same cycle the instruction in EX writes it. A single forwarding path from
-// the EX write-back value into the ID read covers every case, because only one
-// instruction is ever in flight between them.
+// When both harts ask in the same cycle, the one that did not win last time
+// goes first (round robin), so neither can starve the other.
 //
-// Branches and jumps resolve in EX, so a taken one discards the two
-// instructions behind it.
+// With no other memory traffic in between, two requests from different harts
+// are performed in the order the bus accepts them, and each hart's own
+// accesses in program order: memory is sequentially consistent, so FENCE has
+// nothing to do.
 //
-// Traps
-// -----
-// Exceptions and interrupts are both taken in EX, on the instruction sitting
-// there: it is cancelled (no register, memory, CSR or MMIO write), mepc gets
-// its PC, and the two instructions behind it are discarded exactly as for a
-// taken branch. Everything the trap decision needs is either registered in
-// ID/EX or derived from the low two address bits, so it never waits on the
-// full ALU result - except for a taken branch to a misaligned target, which
-// only redirects the PC (branches write nothing else).
+// Second hart
+// -----------
+// The ROM has two ports. Port A always fetches for hart 0; port B reads
+// .rodata for both harts at first, and is handed to hart 1 as its fetch port
+// when hart 1 starts. Hart 1 is held in reset until hart 0 sets bit 1 of the
+// run control register at 0x8000_0200 (bit 0, hart 0, always reads 1), and is
+// put back in reset if the bit is cleared again.
 //
-// An interrupt is only taken on an instruction's first cycle in EX. Once a
-// load has issued its read or the multiplier/divider has started, the
-// instruction runs to completion and the interrupt waits for the next one.
+// While hart 1 runs, data loads from the ROM read as 0. A program that starts
+// hart 1 must therefore not keep constants in the ROM: tools/link_mp.ld puts
+// .rodata in RAM, and tools/crt0.S copies it there, from the ROM, before main
+// runs - that is, before hart 1 can have been started. A program that never
+// starts hart 1 sees no difference from a single-hart CPU.
 //
-// Dependencies: riscv_defines.vh, instruction_memory.v, instruction_decoder.v,
-//               imm_gen.v, register_file.v, control_unit.v, alu.v,
-//               multiplier.v, divider.v, data_memory.v, uart_tx.v, uart_rx.v,
-//               csr_file.v, timer.v
+// Dependencies: riscv_defines.vh, rv_core.v, instruction_memory.v,
+//               data_memory.v, uart_tx.v, uart_rx.v, timer.v
 //////////////////////////////////////////////////////////////////////////////////
 
 `include "riscv_defines.vh"
 
 module cpu_top #(
     parameter INIT_FILE = "",
-    parameter integer TIMER_DIV = 50    // clocks per mtime tick (50 MHz -> 1 us)
+    parameter integer TIMER_DIV = 50,   // clocks per mtime tick (50 MHz -> 1 us)
+    parameter integer NUM_HARTS = 1,    // 1 or 2
+    parameter integer BUS_STRESS = 0    // simulation only: random bus wait states
 ) (
     input  wire        clk,
     input  wire        rst_n,
@@ -65,278 +73,328 @@ module cpu_top #(
     output wire        uart_tx_pin,
     input  wire        uart_rx_pin,
 
-    // Debug ports
+    // Debug ports (hart 0)
     output wire [31:0] debug_pc,
     output wire [31:0] debug_x1
 );
 
-    localparam [31:0] NOP_INST = 32'h0000_0013;
+    localparam integer HARTS = (NUM_HARTS > 1) ? 2 : 1;
 
     // =========================================================================
-    // Stage 1: Instruction Fetch
+    // Harts
     // =========================================================================
-    reg  [31:0] pc;
-    wire [31:0] next_pc;
+    // Hart 0's fetch port
+    wire [31:0] ibus0_addr;
+    wire        ibus0_ce;
+    wire [31:0] ibus0_rdata;
+    wire        ibus0_valid;
 
-    wire [31:0] fetched_inst;
-    wire        fetched_valid;
-    wire [31:0] rom_data_read;
+    // Each hart's side of the data bus
+    wire        dbus0_req,    dbus1_req;
+    wire        dbus0_we,     dbus1_we;
+    wire [31:0] dbus0_addr,   dbus1_addr;
+    wire [31:0] dbus0_wdata,  dbus1_wdata;
+    wire [2:0]  dbus0_funct3, dbus1_funct3;
+    wire        dbus0_amo,    dbus1_amo;
+    wire [4:0]  dbus0_amo_op, dbus1_amo_op;
+    wire        dbus0_gnt,    dbus1_gnt;
+    wire        dbus0_rvalid, dbus1_rvalid;
 
-    // IF/ID. The ROM's port-A output register holds the instruction itself, so
-    // only the PC and the valid bit need registers here.
-    reg  [31:0] ifid_pc;
-    reg         ifid_valid;
+    // The shared bus, as the slaves see it
+    wire        dbus_we;
+    wire [31:0] dbus_addr;
+    wire [31:0] dbus_wdata;
+    wire [2:0]  dbus_funct3;
+    wire        dbus_rvalid;
+    wire [31:0] dbus_rdata;
 
-    // One mux on the fetch path, not two: both selects are register outputs, so
-    // combining them costs no extra logic on the data path itself.
-    wire        id_inst_valid = ifid_valid && fetched_valid;
-    wire [31:0] id_inst       = id_inst_valid ? fetched_inst : NOP_INST;
+    wire              uart_rx_ready;
+    wire [63:0]       mtime;
+    wire [HARTS-1:0]  irq_timer, irq_soft;
+
+    rv_core #(
+        .HART_ID (0)
+    ) core0 (
+        .clk         (clk),
+        .rst_n       (rst_n),
+        .ibus_addr   (ibus0_addr),
+        .ibus_ce     (ibus0_ce),
+        .ibus_rdata  (ibus0_rdata),
+        .ibus_valid  (ibus0_valid),
+        .dbus_req    (dbus0_req),
+        .dbus_we     (dbus0_we),
+        .dbus_addr   (dbus0_addr),
+        .dbus_wdata  (dbus0_wdata),
+        .dbus_funct3 (dbus0_funct3),
+        .dbus_amo    (dbus0_amo),
+        .dbus_amo_op (dbus0_amo_op),
+        .dbus_gnt    (dbus0_gnt),
+        .dbus_rvalid (dbus0_rvalid),
+        .dbus_rdata  (dbus_rdata),
+        // The machine external interrupt is the UART receiver: it is pending
+        // while a received byte is waiting, and reading UART RX data clears it.
+        // It goes to hart 0 only.
+        .irq_ext     (uart_rx_ready),
+        .irq_timer   (irq_timer[0]),
+        .irq_soft    (irq_soft[0]),
+        .mtime       (mtime),
+        .debug_pc    (debug_pc),
+        .debug_x1    (debug_x1)
+    );
+
+    // Run control: hart 1 is held in reset while hart1_run is 0.
+    reg  hart1_run;
+    wire [31:0] rom_b_dout;
+    wire        rom_b_valid;
+    wire [31:0] ibus1_addr;
+    wire        ibus1_ce;
+
+    generate
+        if (HARTS > 1) begin : g_hart1
+            rv_core #(
+                .HART_ID (1)
+            ) core1 (
+                .clk         (clk),
+                .rst_n       (rst_n && hart1_run),
+                .ibus_addr   (ibus1_addr),
+                .ibus_ce     (ibus1_ce),
+                .ibus_rdata  (rom_b_dout),
+                .ibus_valid  (rom_b_valid),
+                .dbus_req    (dbus1_req),
+                .dbus_we     (dbus1_we),
+                .dbus_addr   (dbus1_addr),
+                .dbus_wdata  (dbus1_wdata),
+                .dbus_funct3 (dbus1_funct3),
+                .dbus_amo    (dbus1_amo),
+                .dbus_amo_op (dbus1_amo_op),
+                .dbus_gnt    (dbus1_gnt),
+                .dbus_rvalid (dbus1_rvalid),
+                .dbus_rdata  (dbus_rdata),
+                .irq_ext     (1'b0),
+                .irq_timer   (irq_timer[HARTS-1]),
+                .irq_soft    (irq_soft[HARTS-1]),
+                .mtime       (mtime),
+                .debug_pc    (),
+                .debug_x1    ()
+            );
+        end else begin : g_no_hart1
+            assign ibus1_addr   = 32'd0;
+            assign ibus1_ce     = 1'b1;
+            assign dbus1_req    = 1'b0;
+            assign dbus1_we     = 1'b0;
+            assign dbus1_addr   = 32'd0;
+            assign dbus1_wdata  = 32'd0;
+            assign dbus1_funct3 = 3'd0;
+            assign dbus1_amo    = 1'b0;
+            assign dbus1_amo_op = 5'd0;
+        end
+    endgenerate
 
     // =========================================================================
-    // Stage 2: Decode and Register Read
+    // Data bus arbitration and handshake
     // =========================================================================
-    wire [4:0]  id_rs1, id_rs2, id_rd;
-    wire        id_reg_write;
-    wire [2:0]  id_imm_type;
-    wire [4:0]  id_alu_op;
-    wire        id_alu_src_b;
-    wire        id_branch, id_jump;
-    wire        id_mem_read, id_mem_write;
-    wire [1:0]  id_wb_sel;
-    wire [31:0] id_imm;
-    wire        id_dec_illegal, id_ecall, id_ebreak, id_mret;
-    wire        id_csr, id_csr_write;
-    wire        id_csr_illegal;
-    // An unknown CSR address, or a write to a read-only one, is an illegal
-    // instruction just like a bad opcode.
-    wire        id_illegal = id_dec_illegal || (id_csr && id_csr_illegal);
+    // BUS_STRESS (testbenches only) accepts requests and releases load data on
+    // pseudo-random cycles on top of the arbitration. That works with the
+    // slaves as they are: they read every cycle while rd_active holds, and the
+    // owner keeps the address steady, so the data is still right whenever it
+    // is let through.
+    wire gnt_ok, rsp_ok;
 
-    wire [31:0] rf_rd1, rf_rd2;
+    generate
+        if (BUS_STRESS != 0) begin : g_stress
+            reg [15:0] lfsr;
+            always @(posedge clk) begin
+                if (!rst_n) lfsr <= 16'hACE1;
+                else        lfsr <= {lfsr[14:0], lfsr[15] ^ lfsr[13] ^ lfsr[12] ^ lfsr[10]};
+            end
+            assign gnt_ok = lfsr[0];
+            assign rsp_ok = lfsr[3];
+        end else begin : g_direct
+            assign gnt_ok = 1'b1;
+            assign rsp_ok = 1'b1;
+        end
+    endgenerate
 
-    // =========================================================================
-    // ID/EX pipeline register
-    // =========================================================================
-    reg  [31:0] ex_pc;
-    reg  [31:0] ex_rs1_data, ex_rs2_data;
-    reg  [31:0] ex_alu_a, ex_alu_b;  // ALU operands, already selected in ID
-    reg  [31:0] ex_imm;
-    reg  [4:0]  ex_rd;
-    reg  [4:0]  ex_alu_op;
-    reg         ex_reg_write;
-    reg         ex_branch, ex_jump;
-    reg         ex_mem_read, ex_mem_write;
-    reg  [1:0]  ex_wb_sel;
-    reg  [2:0]  ex_funct3;
-    reg  [6:0]  ex_opcode;
-    reg         ex_valid;
-    reg         ex_fetch_fault;  // the fetch was outside the instruction ROM
-    reg         ex_illegal;
-    reg         ex_ecall, ex_ebreak, ex_mret;
-    reg         ex_csr, ex_csr_write;
-    reg  [4:0]  ex_rs1_idx;      // uimm of the CSR immediate forms
-    reg  [31:0] ex_inst;         // for mtval on an illegal instruction
+    // A load is outstanding from the cycle after it is accepted until its data
+    // is handed over; rd_owner1 says whose it is. Nothing else is accepted
+    // meanwhile.
+    reg rd_outstanding;
+    reg rd_owner1;
+    reg last_win1;      // the last accepted request was hart 1's
 
-    // Stall bookkeeping
-    reg         load_pending;    // 1 during the second (data) cycle of a load
-    reg         mcycle_started;  // 1 once the multiplier/divider has this instruction
+    // Hart 1 wins when it asks alone, or when both ask and it is its turn.
+    wire win1     = dbus1_req && (!dbus0_req || !last_win1);
+    wire bus_free = !rd_outstanding && gnt_ok;
 
-    // =========================================================================
-    // Stage 3: Execute / Memory / Write-back
-    // =========================================================================
-    wire [1:0]  pc_sel;
-    wire [31:0] alu_result;
-    reg  [31:0] reg_write_data;
-    reg  [31:0] next_pc_temp;
+    // The grants need not include the hart's own request: a hart only looks
+    // at its grant while it is asking.
+    assign dbus0_gnt = bus_free && !win1;
+    assign dbus1_gnt = bus_free &&  win1;
 
-    wire [31:0] mul_result;
-    wire        mul_done;
-    wire [31:0] div_result;
-    wire        div_done;
+    // While a load waits for its data the mux stays on its owner.
+    wire sel1 = rd_outstanding ? rd_owner1 : win1;
 
-    wire branch_or_jump = ex_valid && (pc_sel != 2'd0);
+    wire dbus_req    = (dbus0_req || dbus1_req) && bus_free;  // accepted this cycle
+    assign dbus_we     = sel1 ? dbus1_we     : dbus0_we;
+    assign dbus_addr   = sel1 ? dbus1_addr   : dbus0_addr;
+    assign dbus_wdata  = sel1 ? dbus1_wdata  : dbus0_wdata;
+    assign dbus_funct3 = sel1 ? dbus1_funct3 : dbus0_funct3;
+    wire        dbus_amo    = sel1 ? dbus1_amo    : dbus0_amo;
+    wire [4:0]  dbus_amo_op = sel1 ? dbus1_amo_op : dbus0_amo_op;
 
-    // =========================================================================
-    // Traps (EX)
-    // =========================================================================
-    // The low two bits of rs1 + imm, computed on their own. Loads, stores and
-    // JALR all form their address this way, and the alignment checks below only
-    // need these bits - not the 32-bit carry chain behind alu_result.
-    wire [1:0] addr_lo = ex_rs1_data[1:0] + ex_imm[1:0];
+    wire bus_wr = dbus_req &&  dbus_we;
+    wire bus_rd = dbus_req && !dbus_we;
 
-    // funct3[1:0]: 00 byte, 01 halfword, 10 word (same for loads and stores)
-    wire ls_misaligned = ((ex_funct3[1:0] == 2'b10) && (addr_lo != 2'b00)) ||
-                         ((ex_funct3[1:0] == 2'b01) &&  addr_lo[0]);
-
-    // PCs are always word aligned, so a JAL or branch target is misaligned
-    // exactly when imm[1] is set. JALR clears bit 0 of its target itself.
-    wire is_jalr          = (ex_opcode == `OP_JALR);
-    wire exc_jump_mis     = ex_jump && (is_jalr ? addr_lo[1] : ex_imm[1]);
-    wire exc_load_mis     = ex_mem_read  && ls_misaligned;
-    wire exc_store_mis    = ex_mem_write && ls_misaligned;
-
-    wire exc_early = ex_valid && (ex_fetch_fault || ex_illegal || ex_ecall ||
-                                  ex_ebreak || exc_jump_mis ||
-                                  exc_load_mis || exc_store_mis);
-
-    wire        irq_pending;
-    wire [3:0]  irq_code;
-    wire        irq_take = ex_valid && irq_pending && !load_pending && !mcycle_started;
-
-    // trap_early is everything except a taken branch to a misaligned target.
-    // It gates the register, memory, CSR and MMIO writes and the stalls. The
-    // branch case depends on the branch comparison, so it is kept off those
-    // paths; a branch writes none of them anyway.
-    wire trap_early     = irq_take || exc_early;
-    wire exc_branch_mis = ex_valid && ex_branch && ex_imm[1] && (pc_sel != 2'd0);
-    wire trap           = trap_early || exc_branch_mis;
-
-    wire mret_take = ex_valid && ex_mret && !trap_early;
-
-    reg  [3:0]  trap_code;
-    reg  [31:0] trap_val;
-    wire [31:0] jalr_target;
-    wire [31:0] branch_target;
-
-    always @(*) begin
-        trap_val = 32'd0;
-        if (irq_take) begin
-            trap_code = irq_code;
-        end else if (ex_fetch_fault) begin
-            trap_code = `EXC_INST_ACCESS;
-            trap_val  = ex_pc;
-        end else if (ex_illegal) begin
-            trap_code = `EXC_ILLEGAL_INST;
-            trap_val  = ex_inst;
-        end else if (ex_ebreak) begin
-            trap_code = `EXC_BREAKPOINT;
-        end else if (ex_ecall) begin
-            trap_code = `EXC_ECALL_M;
-        end else if (exc_jump_mis || exc_branch_mis) begin
-            trap_code = `EXC_INST_MISALIGNED;
-            trap_val  = is_jalr ? jalr_target : branch_target;
-        end else if (exc_load_mis) begin
-            trap_code = `EXC_LOAD_MISALIGNED;
-            trap_val  = alu_result;
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            rd_outstanding <= 1'b0;
+            rd_owner1      <= 1'b0;
+            last_win1      <= 1'b0;
         end else begin
-            trap_code = `EXC_STORE_MISALIGNED;
-            trap_val  = alu_result;
+            if (bus_rd)           rd_outstanding <= 1'b1;
+            else if (dbus_rvalid) rd_outstanding <= 1'b0;
+
+            if (bus_rd)   rd_owner1 <= win1;
+            if (dbus_req) last_win1 <= win1;
         end
     end
 
-    wire [31:0] csr_rdata;
-    wire [31:0] exc_vector, irq_vector, mepc;
-    wire [31:0] trap_vector = irq_take ? irq_vector : exc_vector;
+    // An SC or AMO answers once its read-modify-write has got to the write.
+    reg [1:0] rmw_step;
 
-    // A taken branch or jump, a trap, or MRET: the two younger instructions go.
-    wire redirect = branch_or_jump || trap || mret_take;
-
-    // minstret counts an instruction one cycle after it retires, so that its
-    // increment does not hang off the trap decision.
-    reg instret_pulse;
+    assign dbus_rvalid  = rd_outstanding && rsp_ok && (rmw_step == 2'd0 || rmw_step[1]);
+    assign dbus0_rvalid = dbus_rvalid && !rd_owner1;
+    assign dbus1_rvalid = dbus_rvalid &&  rd_owner1;
+    wire   rd_active    = bus_rd || rd_outstanding;
 
     // =========================================================================
-    // Load stall
+    // Atomics (LR.W / SC.W / AMO*.W)
     // =========================================================================
-    // Both memories have a registered read port (required to map them onto
-    // BSRAM - see data_memory.v), so load data is one cycle late. Freeze the
-    // pipeline for one cycle and write back in the second cycle. Address,
-    // funct3 and the register operands all stay put while frozen, so the
-    // memory's combinational sizing/extension logic still sees the load's own
-    // controls when the data word arrives.
-    wire load_stall = ex_valid && ex_mem_read && !load_pending && !trap_early;
-
-    // =========================================================================
-    // RV32M stall (multiply and divide)
-    // =========================================================================
-    // Both used to be combinational inside the ALU and both took a turn as the
-    // critical path of the whole design: the divider held it to 5.031 MHz, and
-    // once that moved out the 32x32->64 multiply carry chain held it to
-    // 39.377 MHz - against a 50 MHz constraint in both cases. They now run on
-    // multiplier.v (3 cycles) and divider.v (34 cycles, or 2 for divide-by-zero
-    // and the MIN_INT/-1 overflow) with the pipeline stalled meanwhile.
+    // An atomic request is accepted like a load and holds the bus like one, so
+    // nothing else reaches any slave until it has been answered. LR is a plain
+    // load that also sets the hart's reservation. SC and the AMOs take two
+    // more steps, so that no step has to fit a memory read, an operation and a
+    // memory write into one cycle:
     //
-    // mcycle_started mirrors load_pending: it keeps the start signal a
-    // single-cycle pulse even though the instruction sits in EX for the whole
-    // operation, and clears as soon as the instruction retires.
-    wire is_mul = (ex_alu_op == `ALU_MUL)    || (ex_alu_op == `ALU_MULH) ||
-                  (ex_alu_op == `ALU_MULHSU) || (ex_alu_op == `ALU_MULHU);
-    wire is_div = (ex_alu_op == `ALU_DIV)    || (ex_alu_op == `ALU_DIVU) ||
-                  (ex_alu_op == `ALU_REM)    || (ex_alu_op == `ALU_REMU);
-
-    wire is_mcycle    = ex_valid && (is_mul || is_div);
-    wire mcycle_start = is_mcycle && !mcycle_started && !trap_early;
-    wire mcycle_done  = is_div ? div_done : mul_done;
-    wire mcycle_stall = is_mcycle && !mcycle_done && !trap_early;
-
-    wire stall     = load_stall || mcycle_stall;
-    wire wb_enable = ex_valid && ex_reg_write && !stall && !trap_early;
-
-    // =========================================================================
-    // Forwarding: EX write-back -> ID register read
-    // =========================================================================
-    // The instruction in ID reads the register file in the same cycle the one
-    // in EX writes it, so the read would miss by exactly one instruction. Only
-    // one instruction is ever in flight between the two stages, so a single
-    // forwarding path is enough - no hazard can reach further back, because by
-    // then the value is already in the register file.
+    //   accept   : the read is issued; for SC, whether the reservation holds
+    //              is registered (sc_ok)
+    //   step 1   : the old word arrives and is registered (rmw_old)
+    //   step 2   : the new word is written - for SC only if sc_ok - and the
+    //              answer may go back from here on
+    //   step 3   : written; waiting for the answer to be let through
     //
-    // wb_enable already accounts for stalls, so while EX is waiting on the
-    // memory, multiplier or divider nothing is forwarded and nothing is latched
-    // into ID/EX either.
-    wire fwd_rs1 = wb_enable && (ex_rd != 5'd0) && (ex_rd == id_rs1);
-    wire fwd_rs2 = wb_enable && (ex_rd != 5'd0) && (ex_rd == id_rs2);
-
-    wire [31:0] id_rs1_data = fwd_rs1 ? reg_write_data : rf_rd1;
-    wire [31:0] id_rs2_data = fwd_rs2 ? reg_write_data : rf_rd2;
-
-    // ALU operands are chosen here rather than in EX: A is the PC for AUIPC and
-    // rs1 otherwise, B is the immediate or rs2. Done in EX, that mux sat between
-    // the ID/EX register and the ALU adder on every ALU path, behind a select
-    // line fanning out to 64 bits. Here it comes off the decode instead.
+    // The answer is the old word, or for SC 0 (stored) / 1 (failed).
     //
-    // reg_write_data is the late arrival (it is the end of the EX path), so it
-    // is kept to a single mux level: the forward select is folded with the
-    // operand select, and everything else is muxed beforehand.
-    wire        id_is_auipc = (id_inst[6:0] == `OP_AUIPC);
-    wire        fwd_alu_a   = fwd_rs1 && !id_is_auipc;
-    wire        fwd_alu_b   = fwd_rs2 && !id_alu_src_b;
-    wire [31:0] id_alu_a_rf = id_is_auipc  ? ifid_pc : rf_rd1;
-    wire [31:0] id_alu_b_rf = id_alu_src_b ? id_imm  : rf_rd2;
-    wire [31:0] id_alu_a    = fwd_alu_a ? reg_write_data : id_alu_a_rf;
-    wire [31:0] id_alu_b    = fwd_alu_b ? reg_write_data : id_alu_b_rf;
+    // A reservation covers one word. It is lost when the other hart writes
+    // that word, and when the hart's own SC runs, whether or not it stores.
+    wire is_lr   = dbus_amo && (dbus_amo_op == `AMO_LR);
+    wire is_sc   = dbus_amo && (dbus_amo_op == `AMO_SC);
+    wire rmw_acc = bus_rd && dbus_amo && !is_lr;
 
-    // =========================================================================
-    // Debug assignment
-    // =========================================================================
-    assign debug_pc = ex_valid ? (ex_pc + 32'd4) : pc;
+    reg  [31:0] rmw_old;
+    reg         sc_ok;
+
+    always @(posedge clk) begin
+        if (!rst_n)           rmw_step <= 2'd0;
+        else if (rmw_acc)     rmw_step <= 2'd1;
+        else if (dbus_rvalid) rmw_step <= 2'd0;
+        else if (rmw_step == 2'd1) rmw_step <= 2'd2;
+        else if (rmw_step == 2'd2) rmw_step <= 2'd3;
+    end
+
+    reg  [31:0] rmw_new;
+    always @(*) begin
+        case (dbus_amo_op)
+            `AMO_ADD:  rmw_new = rmw_old + dbus_wdata;
+            `AMO_XOR:  rmw_new = rmw_old ^ dbus_wdata;
+            `AMO_OR:   rmw_new = rmw_old | dbus_wdata;
+            `AMO_AND:  rmw_new = rmw_old & dbus_wdata;
+            `AMO_MIN:  rmw_new = ($signed(rmw_old) < $signed(dbus_wdata)) ? rmw_old : dbus_wdata;
+            `AMO_MAX:  rmw_new = ($signed(rmw_old) < $signed(dbus_wdata)) ? dbus_wdata : rmw_old;
+            `AMO_MINU: rmw_new = (rmw_old < dbus_wdata) ? rmw_old : dbus_wdata;
+            `AMO_MAXU: rmw_new = (rmw_old < dbus_wdata) ? dbus_wdata : rmw_old;
+            default:   rmw_new = dbus_wdata;            // SWAP, SC
+        endcase
+    end
+
+    wire rmw_wr = (rmw_step == 2'd2) && (!is_sc || sc_ok);
+
+    // Every write a slave sees: an accepted store, or the write step of an
+    // SC / AMO. The address is the bus address either way.
+    wire        wr_en   = bus_wr || rmw_wr;
+    wire [31:0] wr_data = rmw_step[1] ? rmw_new : dbus_wdata;
+
+    // Reservations, one per hart
+    reg         res0_valid, res1_valid;
+    reg  [29:0] res0_addr,  res1_addr;
+    wire        res0_hit = res0_valid && (res0_addr == dbus_addr[31:2]);
+    wire        res1_hit = res1_valid && (res1_addr == dbus_addr[31:2]);
+
+    always @(posedge clk) begin
+        if (rmw_acc)
+            sc_ok <= sel1 ? res1_hit : res0_hit;
+    end
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            res0_valid <= 1'b0;
+            res1_valid <= 1'b0;
+        end else begin
+            // A write by one hart breaks the other's reservation on that word.
+            if (wr_en &&  sel1 && res0_hit) res0_valid <= 1'b0;
+            if (wr_en && !sel1 && res1_hit) res1_valid <= 1'b0;
+
+            if (bus_rd && is_lr) begin
+                if (sel1) begin
+                    res1_valid <= 1'b1;
+                    res1_addr  <= dbus_addr[31:2];
+                end else begin
+                    res0_valid <= 1'b1;
+                    res0_addr  <= dbus_addr[31:2];
+                end
+            end
+
+            if (rmw_acc && is_sc) begin
+                if (sel1) res1_valid <= 1'b0;
+                else      res0_valid <= 1'b0;
+            end
+
+            if (!hart1_run)
+                res1_valid <= 1'b0;
+        end
+    end
 
     // =========================================================================
     // Memory Interface / Address Decoding Outputs
     // =========================================================================
     // The data RAM is 32 KB (0x0001_0000 - 0x0001_7FFF). The decode still
     // claims the whole 64 KB window, so 0x0001_8000 - 0x0001_FFFF aliases it.
-    wire imem_sel = (alu_result < 32'h0000_8000);
-    wire dmem_sel = (alu_result >= 32'h0001_0000) && (alu_result <= 32'h0001_FFFF);
+    wire imem_sel = (dbus_addr < 32'h0000_8000);
+    wire dmem_sel = (dbus_addr >= 32'h0001_0000) && (dbus_addr <= 32'h0001_FFFF);
     // MMIO: 0x8000_0010 = UART TX data register
     //       0x8000_0014 = UART TX status register (bit0 = busy)
     //       0x8000_0018 = UART RX data register
     //       0x8000_001C = UART RX status register (bit0 = ready)
-    wire mmio_uart_tx_sel      = (alu_result == 32'h8000_0010);
-    wire mmio_uart_stat_sel    = (alu_result == 32'h8000_0014);
-    wire mmio_uart_rx_sel      = (alu_result == 32'h8000_0018);
-    wire mmio_uart_rx_stat_sel = (alu_result == 32'h8000_001C);
-    //       0x8000_0100 - 0x8000_011F = machine timer (see timer.v)
+    wire mmio_uart_tx_sel      = (dbus_addr == 32'h8000_0010);
+    wire mmio_uart_stat_sel    = (dbus_addr == 32'h8000_0014);
+    wire mmio_uart_rx_sel      = (dbus_addr == 32'h8000_0018);
+    wire mmio_uart_rx_stat_sel = (dbus_addr == 32'h8000_001C);
+    //       0x8000_0100 - 0x8000_013F = machine timer (see timer.v)
     wire mmio_timer_sel;
+    //       0x8000_0200 = hart run control
+    wire mmio_hartctl_sel      = (dbus_addr == 32'h8000_0200);
 
     // Load data is used one cycle after the address is formed (the load's data
-    // cycle), and EX is frozen in between, so the address decode can be
-    // registered in the first cycle and the load-data mux driven from the
-    // registers. That takes the ALU adder and the 32-bit address compares off
-    // the path into reg_write_data, which was the critical path of the design.
-    // Nothing reads selected_mem_data in a load's first cycle (the write-back
-    // waits for the data cycle), so these can simply register every cycle.
+    // cycle), and the hart holds the address in between, so the address decode
+    // can be registered in the first cycle and the load-data mux driven from
+    // the registers. That takes the ALU adder and the 32-bit address compares
+    // off the path into the hart's write-back, which was the critical path of
+    // the design. Nothing reads selected_mem_data in a load's first cycle (the
+    // write-back waits for dbus_rvalid), so these can simply register every
+    // cycle.
     reg       ld_dmem_q, ld_imem_q;
     reg       ld_uart_stat_q, ld_uart_rx_q, ld_uart_rx_stat_q, ld_timer_q;
+    reg       ld_hartctl_q;
     reg [1:0] ld_offset_q;
 
     always @(posedge clk) begin
@@ -346,34 +404,34 @@ module cpu_top #(
         ld_uart_rx_q      <= mmio_uart_rx_sel;
         ld_uart_rx_stat_q <= mmio_uart_rx_stat_sel;
         ld_timer_q        <= mmio_timer_sel;
-        ld_offset_q       <= alu_result[1:0];
+        ld_hartctl_q      <= mmio_hartctl_sel;
+        ld_offset_q       <= dbus_addr[1:0];
     end
 
-    // A trapping store is cancelled before it reaches any memory or device.
-    wire ex_store = ex_valid && ex_mem_write && !trap_early;
-    wire ex_load  = ex_valid && ex_mem_read;
-
+    // A hart never puts a trapping load or store on the bus, so everything
+    // below can act on wr_en / bus_rd as they are.
+    //
     // mem_write_en / mem_read_en flag every store / load, including ones to
     // the internal RAM, ROM, UART and timer. External devices already compare
     // the full address against their own registers, and gating the enables
     // with the internal decode here put two address compares in a row in
     // front of every external register's write enable.
-    assign mem_addr       = alu_result;
-    assign mem_write_data = ex_rs2_data;
-    assign mem_write_en   = ex_store;
-    assign mem_read_en    = ex_load;
+    assign mem_addr       = dbus_addr;
+    assign mem_write_data = wr_data;
+    assign mem_write_en   = wr_en;
+    assign mem_read_en    = rd_active;
 
     // =========================================================================
     // UART TX MMIO
     // =========================================================================
     wire uart_busy;
     // tx_start fires for one clock when the CPU stores to the UART TX address
-    wire uart_start = ex_store && mmio_uart_tx_sel;
+    wire uart_start = wr_en && mmio_uart_tx_sel;
 
     uart_tx uart_tx_inst (
         .clk      (clk),
         .rst_n    (rst_n),
-        .tx_data  (ex_rs2_data[7:0]),
+        .tx_data  (wr_data[7:0]),
         .tx_start (uart_start),
         .tx_pin   (uart_tx_pin),
         .tx_busy  (uart_busy)
@@ -383,9 +441,8 @@ module cpu_top #(
     // UART RX MMIO
     // =========================================================================
     wire [7:0] uart_rx_data;
-    wire       uart_rx_ready;
     // rx_clear fires once, in the data cycle of the load that reads RX data
-    wire uart_rx_clear = ex_load && mmio_uart_rx_sel && !stall;
+    wire uart_rx_clear = dbus_rvalid && ld_uart_rx_q;
 
     uart_rx uart_rx_inst (
         .clk      (clk),
@@ -397,20 +454,29 @@ module cpu_top #(
     );
 
     // =========================================================================
+    // Hart run control MMIO
+    // =========================================================================
+    always @(posedge clk) begin
+        if (!rst_n)
+            hart1_run <= 1'b0;
+        else if (wr_en && mmio_hartctl_sel)
+            hart1_run <= (HARTS > 1) && wr_data[1];
+    end
+
+    // =========================================================================
     // Machine timer MMIO
     // =========================================================================
     wire [31:0] timer_read_data;
-    wire [63:0] mtime;
-    wire        irq_timer, irq_soft;
 
     timer #(
-        .DIV (TIMER_DIV)
+        .DIV       (TIMER_DIV),
+        .NUM_HARTS (HARTS)
     ) timer_inst (
         .clk        (clk),
         .rst_n      (rst_n),
-        .addr       (alu_result),
-        .write_data (ex_rs2_data),
-        .write_en   (ex_store && mmio_timer_sel),
+        .addr       (dbus_addr),
+        .write_data (wr_data),
+        .write_en   (wr_en && mmio_timer_sel),
         .sel        (mmio_timer_sel),
         .read_data  (timer_read_data),
         .mtime      (mtime),
@@ -419,178 +485,56 @@ module cpu_top #(
     );
 
     // =========================================================================
-    // CSRs and trap state
-    // =========================================================================
-    // The machine external interrupt is the UART receiver: it is pending while
-    // a received byte is waiting, and reading UART RX data clears it.
-    csr_file csrs (
-        .clk         (clk),
-        .rst_n       (rst_n),
-        .chk_addr    (id_inst[31:20]),
-        .chk_write   (id_csr_write),
-        .chk_illegal (id_csr_illegal),
-        .addr        (ex_imm[11:0]),
-        .rdata       (csr_rdata),
-        .we          (ex_valid && ex_csr && ex_csr_write && !trap_early && !stall),
-        .op          (ex_funct3[1:0]),
-        .operand     (ex_funct3[2] ? {27'd0, ex_rs1_idx} : ex_rs1_data),
-        .trap        (trap),
-        .trap_irq    (irq_take),
-        .trap_code   (trap_code),
-        .trap_pc     (ex_pc),
-        .trap_val    (trap_val),
-        .mret        (mret_take),
-        .instret     (instret_pulse),
-        .irq_ext     (uart_rx_ready),
-        .irq_timer   (irq_timer),
-        .irq_soft    (irq_soft),
-        .mtime       (mtime),
-        .irq_pending (irq_pending),
-        .irq_code    (irq_code),
-        .exc_vector  (exc_vector),
-        .irq_vector  (irq_vector),
-        .mepc        (mepc)
-    );
-
-    // =========================================================================
-    // Module Instantiations
+    // Memories
     // =========================================================================
 
-    // 1. Instruction Memory / .rodata Dual-Port ROM
+    // Instruction ROM. Port A fetches for hart 0. Port B reads .rodata, or
+    // fetches for hart 1 while it runs (see the top of this file).
     instruction_memory #(
         .INIT_FILE (INIT_FILE)
     ) imem (
-        .clk        (clk),
-        .ce         (!stall),
-        .addr       (pc),
-        .dout       (fetched_inst),
-        .dout_valid (fetched_valid),
-        .addr_b     (alu_result),
-        .dout_b     (rom_data_read)
+        .clk          (clk),
+        .ce           (ibus0_ce),
+        .addr         (ibus0_addr),
+        .dout         (ibus0_rdata),
+        .dout_valid   (ibus0_valid),
+        .ce_b         (hart1_run ? ibus1_ce   : 1'b1),
+        .addr_b       (hart1_run ? ibus1_addr : dbus_addr),
+        .dout_b       (rom_b_dout),
+        .dout_b_valid (rom_b_valid)
     );
 
-    // 2. Instruction Decoder (ID)
-    instruction_decoder dec (
-        .inst      (id_inst),
-        .rs1       (id_rs1),
-        .rs2       (id_rs2),
-        .rd        (id_rd),
-        .reg_write (id_reg_write),
-        .imm_type  (id_imm_type),
-        .alu_op    (id_alu_op),
-        .alu_src_b (id_alu_src_b),
-        .branch    (id_branch),
-        .jump      (id_jump),
-        .mem_read  (id_mem_read),
-        .mem_write (id_mem_write),
-        .wb_sel    (id_wb_sel),
-        .illegal   (id_dec_illegal),
-        .ecall     (id_ecall),
-        .ebreak    (id_ebreak),
-        .mret      (id_mret),
-        .csr       (id_csr),
-        .csr_write (id_csr_write)
-    );
+    wire [31:0] rom_data_read = (rom_b_valid && !hart1_run) ? rom_b_dout : 32'd0;
 
-    // 3. Immediate Generator (ID)
-    imm_gen igen (
-        .inst     (id_inst),
-        .imm_type (id_imm_type),
-        .imm      (id_imm)
-    );
-
-    // 4. Register File (read in ID, written from EX)
-    register_file regfile (
-        .clk    (clk),
-        .rst    (!rst_n),
-        .rs1    (id_rs1),
-        .rd1    (rf_rd1),
-        .rs2    (id_rs2),
-        .rd2    (rf_rd2),
-        .rd     (ex_rd),
-        .wd     (reg_write_data),
-        .we     (wb_enable),
-        .dbg_x1 (debug_x1)
-    );
-
-    // 5. Control Unit (EX)
-    control_unit ctrl (
-        .opcode     (ex_opcode),
-        .funct3     (ex_funct3),
-        .branch     (ex_branch),
-        .jump       (ex_jump),
-        .rs1_data   (ex_rs1_data),
-        .rs2_data   (ex_rs2_data),
-        .pc_sel     (pc_sel)
-    );
-
-    // 6. ALU (EX)
-    alu alu_inst (
-        .a      (ex_alu_a),
-        .b      (ex_alu_b),
-        .alu_op (ex_alu_op),
-        .result (alu_result),
-        .zero   ()
-    );
-
-    // 6b. Multi-cycle Multiplier (RV32M MUL/MULH/MULHSU/MULHU)
-    multiplier mul_unit (
-        .clk    (clk),
-        .rst_n  (rst_n),
-        .start  (mcycle_start && is_mul),
-        .a      (ex_rs1_data),
-        .b      (ex_rs2_data),
-        .op     (ex_alu_op),
-        .result (mul_result),
-        .done   (mul_done)
-    );
-
-    // 6c. Multi-cycle Divider (RV32M DIV/DIVU/REM/REMU)
-    divider div_unit (
-        .clk       (clk),
-        .rst_n     (rst_n),
-        .start     (mcycle_start && is_div),
-        .a         (ex_rs1_data),
-        .b         (ex_rs2_data),
-        .is_signed ((ex_alu_op == `ALU_DIV) || (ex_alu_op == `ALU_REM)),
-        .want_rem  ((ex_alu_op == `ALU_REM) || (ex_alu_op == `ALU_REMU)),
-        .result    (div_result),
-        .done      (div_done)
-    );
-
-    // Write-back value for ALU-class instructions. alu_result itself still
-    // drives address decoding and the branch comparison, which multiplies and
-    // divides never use, so only the register write-back needs these answers.
-    wire [31:0] exec_result = is_div ? div_result :
-                              is_mul ? mul_result : alu_result;
-
-    // 7. Internal Data Memory (RAM)
+    // Data RAM
     wire [31:0] internal_mem_read_data;
 
     data_memory dmem (
         .clk        (clk),
-        .addr       (alu_result),
-        .write_data (ex_rs2_data),
-        .write_en   (ex_store && dmem_sel),
-        .read_en    (ex_load  && dmem_sel),
-        .funct3     (ex_funct3),
+        .addr       (dbus_addr),
+        .write_data (wr_data),
+        .write_en   (wr_en && dmem_sel),
+        .read_en    (rd_active && dmem_sel),
+        .funct3     (dbus_funct3),
         .read_data  (internal_mem_read_data)
     );
 
     // =========================================================================
-    // Datapath Multiplexers (EX)
+    // Load data select
     // =========================================================================
 
-    // Load data select (registered address decode, see above)
+    // Registered address decode, see above
     reg  [31:0] selected_mem_data;
     wire [1:0]  mem_byte_offset = ld_offset_q;
 
     always @(*) begin
-        if (ld_dmem_q) begin
+        if (rmw_step[1]) begin
+            selected_mem_data = rmw_old;            // SC / AMO answer
+        end else if (ld_dmem_q) begin
             selected_mem_data = internal_mem_read_data;
         end else if (ld_imem_q) begin
             // Byte/halfword selection for .rodata loads (LBU, LB, LHU, LH, LW)
-            case (ex_funct3)
+            case (dbus_funct3)
                 3'b000: begin // LB - signed byte
                     case (mem_byte_offset)
                         2'b00: selected_mem_data = {{24{rom_data_read[7]}},  rom_data_read[7:0]};
@@ -629,132 +573,20 @@ module cpu_top #(
             selected_mem_data = {31'd0, uart_rx_ready};
         end else if (ld_timer_q) begin
             selected_mem_data = timer_read_data;
+        end else if (ld_hartctl_q) begin
+            selected_mem_data = {30'd0, hart1_run, 1'b1};
         end else begin
             selected_mem_data = mem_read_data;
         end
     end
 
-    // Register write-back select
-    always @(*) begin
-        case (ex_wb_sel)
-            `WB_ALU: reg_write_data = exec_result;
-            `WB_MEM: reg_write_data = selected_mem_data;
-            `WB_PC4: reg_write_data = ex_pc + 32'd4;
-            `WB_CSR: reg_write_data = csr_rdata;
-        endcase
-    end
+    assign dbus_rdata = selected_mem_data;
 
-    // Next PC select. JALR clears the low bit of the target (RISC-V spec).
-    assign jalr_target   = (ex_rs1_data + ex_imm) & 32'hFFFF_FFFE;
-    assign branch_target = ex_pc + ex_imm;
-
-    always @(*) begin
-        if (trap) begin
-            next_pc_temp = trap_vector;
-        end else if (mret_take) begin
-            next_pc_temp = mepc;
-        end else if (branch_or_jump) begin
-            case (pc_sel)
-                2'd1:    next_pc_temp = branch_target;
-                2'd2:    next_pc_temp = jalr_target;
-                default: next_pc_temp = pc + 32'd4;
-            endcase
-        end else begin
-            next_pc_temp = pc + 32'd4;
-        end
-    end
-    assign next_pc = next_pc_temp;
-
-    // =========================================================================
-    // Pipeline Registers
-    // =========================================================================
-    // A taken branch or jump (or a trap, or MRET) is only known in EX, so the
-    // two instructions behind it - one in ID, one being fetched - are discarded
-    // by clearing their valid bits. The ID/EX payload is left alone; ex_valid
-    // gates everything that could have an effect.
+    // SC / AMO step 1: keep the old word (the AMO's operand and answer), or
+    // for SC the answer itself.
     always @(posedge clk) begin
-        if (!rst_n) begin
-            pc             <= 32'd0;
-            ifid_pc        <= 32'd0;
-            ifid_valid     <= 1'b0;
-            ex_valid       <= 1'b0;
-            ex_pc          <= 32'd0;
-            ex_rs1_data    <= 32'd0;
-            ex_rs2_data    <= 32'd0;
-            ex_alu_a       <= 32'd0;
-            ex_alu_b       <= 32'd0;
-            ex_imm         <= 32'd0;
-            ex_rd          <= 5'd0;
-            ex_alu_op      <= `ALU_ADD;
-            ex_reg_write   <= 1'b0;
-            ex_branch      <= 1'b0;
-            ex_jump        <= 1'b0;
-            ex_mem_read    <= 1'b0;
-            ex_mem_write   <= 1'b0;
-            ex_wb_sel      <= 2'd0;
-            ex_funct3      <= 3'd0;
-            ex_opcode      <= 7'd0;
-            load_pending   <= 1'b0;
-            mcycle_started <= 1'b0;
-            instret_pulse  <= 1'b0;
-            ex_fetch_fault <= 1'b0;
-            ex_illegal     <= 1'b0;
-            ex_ecall       <= 1'b0;
-            ex_ebreak      <= 1'b0;
-            ex_mret        <= 1'b0;
-            ex_csr         <= 1'b0;
-            ex_csr_write   <= 1'b0;
-            ex_rs1_idx     <= 5'd0;
-            ex_inst        <= 32'd0;
-        end else if (stall) begin
-            // Hold every stage until the memory, multiplier or divider answers.
-            load_pending   <= 1'b1;
-            mcycle_started <= 1'b1;
-            instret_pulse  <= 1'b0;
-        end else begin
-            load_pending   <= 1'b0;
-            mcycle_started <= 1'b0;
-            instret_pulse  <= ex_valid && !trap;
-
-            pc <= next_pc;
-
-            if (redirect) begin
-                ifid_pc    <= 32'd0;
-                ifid_valid <= 1'b0;
-                ex_valid   <= 1'b0;
-            end else begin
-                ifid_pc    <= pc;
-                ifid_valid <= 1'b1;
-
-                ex_valid     <= ifid_valid;
-                ex_pc        <= ifid_pc;
-                ex_rs1_data  <= id_rs1_data;
-                ex_rs2_data  <= id_rs2_data;
-                ex_alu_a     <= id_alu_a;
-                ex_alu_b     <= id_alu_b;
-                ex_imm       <= id_imm;
-                ex_rd        <= id_rd;
-                ex_alu_op    <= id_alu_op;
-                ex_reg_write <= id_reg_write;
-                ex_branch    <= id_branch;
-                ex_jump      <= id_jump;
-                ex_mem_read  <= id_mem_read;
-                ex_mem_write <= id_mem_write;
-                ex_wb_sel    <= id_wb_sel;
-                ex_funct3    <= id_inst[14:12];
-                ex_opcode    <= id_inst[6:0];
-
-                ex_fetch_fault <= ifid_valid && !fetched_valid;
-                ex_illegal     <= id_illegal;
-                ex_ecall       <= id_ecall;
-                ex_ebreak      <= id_ebreak;
-                ex_mret        <= id_mret;
-                ex_csr         <= id_csr;
-                ex_csr_write   <= id_csr_write;
-                ex_rs1_idx     <= id_rs1;
-                ex_inst        <= id_inst;
-            end
-        end
+        if (rmw_step == 2'd1)
+            rmw_old <= is_sc ? {31'd0, !sc_ok} : selected_mem_data;
     end
 
 endmodule

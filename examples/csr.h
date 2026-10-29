@@ -37,11 +37,19 @@
 #define IRQ_M_EXT               11
 
 // Machine timer (src/timer.v). mtime counts microseconds on the board.
+// Each hart has a 32-byte block at 0x80000100 + 0x20 * hartid holding its own
+// msip and mtimecmp; mtime is shared and readable through every block. The
+// plain TIMER_* names are hart 0's block.
 #define TIMER_MSIP      ((volatile unsigned int *)0x80000100)
 #define TIMER_CMP_LO    ((volatile unsigned int *)0x80000108)
 #define TIMER_CMP_HI    ((volatile unsigned int *)0x8000010C)
 #define TIMER_TIME_LO   ((volatile unsigned int *)0x80000110)
 #define TIMER_TIME_HI   ((volatile unsigned int *)0x80000114)
+
+#define TIMER_HART_STRIDE       0x20
+#define TIMER_MSIP_OF(h)        ((volatile unsigned int *)(0x80000100 + TIMER_HART_STRIDE * (h)))
+#define TIMER_CMP_LO_OF(h)      ((volatile unsigned int *)(0x80000108 + TIMER_HART_STRIDE * (h)))
+#define TIMER_CMP_HI_OF(h)      ((volatile unsigned int *)(0x8000010C + TIMER_HART_STRIDE * (h)))
 
 static inline unsigned long long timer_now(void) {
     unsigned int hi, lo;
@@ -54,10 +62,20 @@ static inline unsigned long long timer_now(void) {
 
 // The timer interrupt is pending while mtime >= mtimecmp. Parking the low word
 // at its maximum first keeps the half-written value from firing early.
+static inline void timer_set_cmp_of(unsigned int hart, unsigned long long t) {
+    *TIMER_CMP_LO_OF(hart) = 0xFFFFFFFFu;
+    *TIMER_CMP_HI_OF(hart) = (unsigned int)(t >> 32);
+    *TIMER_CMP_LO_OF(hart) = (unsigned int)t;
+}
+
+// Sets the calling hart's own mtimecmp.
 static inline void timer_set_cmp(unsigned long long t) {
-    *TIMER_CMP_LO = 0xFFFFFFFFu;
-    *TIMER_CMP_HI = (unsigned int)(t >> 32);
-    *TIMER_CMP_LO = (unsigned int)t;
+    timer_set_cmp_of(read_csr(mhartid), t);
+}
+
+// Raises (1) or clears (0) another hart's machine software interrupt.
+static inline void send_ipi(unsigned int hart, unsigned int pending) {
+    *TIMER_MSIP_OF(hart) = pending;
 }
 
 #endif // CSR_H
