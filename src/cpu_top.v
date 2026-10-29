@@ -145,7 +145,6 @@ module cpu_top #(
     // =========================================================================
     wire [1:0]  pc_sel;
     wire [31:0] alu_result;
-    wire        alu_zero;
     reg  [31:0] reg_write_data;
     reg  [31:0] next_pc_temp;
 
@@ -328,9 +327,6 @@ module cpu_top #(
     wire mmio_uart_rx_stat_sel = (alu_result == 32'h8000_001C);
     //       0x8000_0100 - 0x8000_011F = machine timer (see timer.v)
     wire mmio_timer_sel;
-    wire mmio_sel              = mmio_uart_tx_sel || mmio_uart_stat_sel ||
-                                 mmio_uart_rx_sel || mmio_uart_rx_stat_sel ||
-                                 mmio_timer_sel;
 
     // Load data is used one cycle after the address is formed (the load's data
     // cycle), and EX is frozen in between, so the address decode can be
@@ -357,10 +353,15 @@ module cpu_top #(
     wire ex_store = ex_valid && ex_mem_write && !trap_early;
     wire ex_load  = ex_valid && ex_mem_read;
 
+    // mem_write_en / mem_read_en flag every store / load, including ones to
+    // the internal RAM, ROM, UART and timer. External devices already compare
+    // the full address against their own registers, and gating the enables
+    // with the internal decode here put two address compares in a row in
+    // front of every external register's write enable.
     assign mem_addr       = alu_result;
     assign mem_write_data = ex_rs2_data;
-    assign mem_write_en   = ex_store && !dmem_sel && !mmio_sel;
-    assign mem_read_en    = ex_load  && !dmem_sel && !mmio_sel;
+    assign mem_write_en   = ex_store;
+    assign mem_read_en    = ex_load;
 
     // =========================================================================
     // UART TX MMIO
@@ -518,8 +519,8 @@ module cpu_top #(
         .funct3     (ex_funct3),
         .branch     (ex_branch),
         .jump       (ex_jump),
-        .alu_zero   (alu_zero),
-        .alu_result (alu_result),
+        .rs1_data   (ex_rs1_data),
+        .rs2_data   (ex_rs2_data),
         .pc_sel     (pc_sel)
     );
 
@@ -529,7 +530,7 @@ module cpu_top #(
         .b      (ex_alu_b),
         .alu_op (ex_alu_op),
         .result (alu_result),
-        .zero   (alu_zero)
+        .zero   ()
     );
 
     // 6b. Multi-cycle Multiplier (RV32M MUL/MULH/MULHSU/MULHU)
