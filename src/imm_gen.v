@@ -45,6 +45,7 @@ module imm_gen (
             // ------------------------------------------------------------------
             `IMM_J: imm = {{12{inst[31]}}, inst[19:12], inst[20], inst[30:21], 1'b0};
 
+            // IMM_Z (atomics) and anything else
             default: imm = 32'd0;
         endcase
     end

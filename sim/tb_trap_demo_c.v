@@ -134,7 +134,7 @@ module tb_trap_demo_c;
         #3_000_000;
 
         $display("\n--- checks ---");
-        check("misa=0x40001100", 15);
+        check("misa=0x40001101", 15);
         check("trap: mcause=11 ", 16);
         check("trap: mcause=2 ", 15);
         check("mtval=0x0", 9);

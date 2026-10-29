@@ -13,6 +13,8 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 
 - RV32I の基本演算、即値演算、分岐、ジャンプ、ロード/ストアを実装済み
 - RV32M の乗算・除算命令を実装済み (多サイクル: 乗算3サイクル / 除算34サイクル)
+- A 拡張 (LR.W / SC.W / AMO*.W) を実装済み ([詳細](#アトミック命令-a-拡張))
+- 2 ハート (デュアルコア) 構成。データバスを共有 ([詳細](#2-つ目のハート-hart-1))
 - Scratch RAM と UART TX/RX の MMIO を接続済み
 - 3段パイプライン化（フェッチ / デコード+レジスタ読み出し / 実行+書き戻し）
 - EX から ID へのフォワーディングでデータハザードを解決
@@ -47,7 +49,7 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 
 > **注意: 本CPUは C拡張 (圧縮命令) を実装していません。**
 > C をビルドするときは必ず `-march=rv32im -mabi=ilp32` を指定してください
-> (CSR を使うコードは `-march=rv32im_zicsr`)。
+> (CSR を使うコードは `-march=rv32im_zicsr`、アトミック命令を使うコードは `rv32ima`)。
 
 ## 開発ロードマップ
 
@@ -63,17 +65,19 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 | 8 | 3段パイプライン化 + フォワーディング | ✅ |
 | 9 | CSR / 例外 / 割り込み | ✅ |
 | 10+ | SDRAM | 🔧 作業中 |
-| 11 | マルチコア (2ハート) | 🔧 作業中 (排他命令は未実装) |
+| 11 | マルチコア (2ハート) + A拡張 | 🔧 シミュレーションで動作確認済み (実機未確認) |
 
 ## ISA
 
-- **ベース**: RV32I + M / Zicsr / Zifencei (RV32IM_Zicsr_Zifencei)、マシンモードのみ
+- **ベース**: RV32I + M / A / Zicsr / Zifencei (RV32IMA_Zicsr_Zifencei)、マシンモードのみ
 - **レジスタ**: 32本 × 32ビット (x0 = 常に0)
 - **命令長**: 固定 32ビット (C拡張の圧縮命令は未対応)
-- **実装済み命令**: 57
+- **実装済み命令**: 68
   - RV32I 40命令: LUI, AUIPC, JAL, JALR, 分岐6, ロード5, ストア3,
     即値演算9, レジスタ間演算10, FENCE, ECALL, EBREAK
   - M拡張 8命令: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU
+  - A拡張 11命令: LR.W, SC.W, AMOSWAP.W, AMOADD.W, AMOXOR.W, AMOAND.W, AMOOR.W,
+    AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W
   - Zicsr 6命令: CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI
   - 特権命令: MRET, WFI / Zifencei: FENCE.I
 - FENCE / FENCE.I / WFI は何もしない命令として実行します (キャッシュが無く、
@@ -91,7 +95,7 @@ EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO へ�
 | CSR | 内容 |
 |:--|:--|
 | `mstatus` | MIE (bit3), MPIE (bit7)。MPP (bit12:11) は常に 11 |
-| `misa` | `0x40001100` (RV32IM)。書き込みは無視 |
+| `misa` | `0x40001101` (RV32IMA)。書き込みは無視 |
 | `mie` / `mip` | MSIE/MSIP (bit3), MTIE/MTIP (bit7), MEIE/MEIP (bit11)。`mip` は読み出し専用で割り込み線の状態を映す |
 | `mtvec` | BASE + MODE (0: direct, 1: vectored。vectored では割り込み N を BASE+4N へ) |
 | `mscratch` / `mepc` / `mcause` / `mtval` | トラップ用 |
@@ -207,8 +211,7 @@ CPU は「ハート」と「SoC」に分かれています。
 - `crt0.S` は `mhartid` が 0 以外なら初期化を飛ばし、hart 0 のスタックの
   `__hart_stack_size` (既定 4 KB) 下に自分のスタックを置いて `hart_main(hartid)` を呼びます
 - UART 受信割り込みは hart 0 にだけ届きます。タイマとソフトウェア割り込みはハートごとです
-- **アトミック命令 (A 拡張) は未実装**です。両方のハートが書き込む変数は、まだ安全に
-  更新できません (片方だけが書くフラグでの受け渡しは可能)
+- 両方のハートが書き込む変数は、アトミック命令 (下記) で更新します
 
 ```c
 #include "mp.h"
@@ -224,7 +227,26 @@ int main(void) {                        // hart 0
 ```
 
 `examples/multicore_demo.c` が使用例です。2 ハートの同時メモリアクセス、RAM 上の `.rodata`、
-ハート間のピンポン 1000 往復、コア間割り込みを自己検査し、`sim/tb_multicore.v` で確認しています。
+ハート間のピンポン 1000 往復、共有カウンタの同時更新 (AMOADD / LR・SC / AMOSWAP の
+スピンロック)、コア間割り込みを自己検査し、`sim/tb_multicore.v` で確認しています。
+
+### アトミック命令 (A 拡張)
+
+LR.W / SC.W / AMO*.W はハートからは「操作つきのロード」として 1 回だけバスに出し、
+SoC (`cpu_top.v`) が読み出し・演算・書き込みをバスを占有したまま実行します。
+その間は他のハートのアクセスが入らないので、AMO は不可分です。
+
+| 命令 | サイクル数 (待ちなし) | 動作 |
+|:--|:--|:--|
+| LR.W | 2 (ロードと同じ) | 読み出し、そのハートの予約をそのワードに設定 |
+| SC.W | 4 | 予約が有効なら書き込んで rd = 0、無効なら書かずに rd = 1。どちらでも予約は消える |
+| AMO*.W | 4 | 旧値を rd に返し、演算結果を書き込む |
+
+- 予約はハートごとに 1 ワード単位です。もう一方のハートがそのワードに書き込むと消えます
+- `aq` / `rl` ビットは何もしません (メモリが逐次一貫のため)
+- 非整列アドレスは LR がロード非整列例外 (4)、SC / AMO がストア非整列例外 (6)
+- C からは GCC の `__atomic_*` 組み込み関数がそのまま使えます (`-march=rv32ima_zicsr`)
+- `sim/amo_test.S` (`sim/tb_amo.v`) が全命令の動作と予約の規則を自己検査します
 
 ## ディレクトリ構成
 
@@ -251,7 +273,8 @@ RISC_V_fpga/
 │   ├── blinky.v              # LED点滅テスト (Phase 1)
 │   └── uart_*.s / uart_*.hex # 手書きアセンブリのテストプログラム
 ├── sim/                      # テストベンチ (23本, tb_*.v)
-│   └── trap_test.S / .hex    # tb_trap.v 用の CSR・例外・割り込み自己検査プログラム
+│   ├── trap_test.S / .hex    # tb_trap.v 用の CSR・例外・割り込み自己検査プログラム
+│   └── amo_test.S / .hex     # tb_amo.v 用のアトミック命令自己検査プログラム
 ├── examples/                 # C / アセンブリのサンプルとビルド済み hex
 │   ├── uart.h                # UART MMIO ヘルパ
 │   ├── csr.h                 # CSR アクセス・トラップ定数・タイマ操作
@@ -459,8 +482,8 @@ riscv64-unknown-elf-gcc -march=rv32im_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfi
 riscv64-unknown-elf-objcopy -O binary examples/trap_demo.elf examples/trap_demo.bin
 python tools/bin2hex.py examples/trap_demo.bin > examples/trap_demo.hex
 
-# multicore_demo (hart 1 を起動するので link_mp.ld でリンク)
-riscv64-unknown-elf-gcc -march=rv32im_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
+# multicore_demo (hart 1 を起動するので link_mp.ld でリンク。アトミック命令を使うので _a も必要)
+riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
   tools/crt0.S examples/multicore_demo.c -o examples/multicore_demo.elf
 riscv64-unknown-elf-objcopy -O binary examples/multicore_demo.elf examples/multicore_demo.bin
 python tools/bin2hex.py examples/multicore_demo.bin > examples/multicore_demo.hex

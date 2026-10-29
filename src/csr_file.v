@@ -6,7 +6,7 @@
 // architecture it needs:
 //
 //   mstatus   MIE (bit 3), MPIE (bit 7); MPP (bits 12:11) reads as 11
-//   misa      RV32IM, read-only (writes are ignored, which WARL allows)
+//   misa      RV32IMA, read-only (writes are ignored, which WARL allows)
 //   mie/mip   MSIE/MSIP (3), MTIE/MTIP (7), MEIE/MEIP (11). mip is read-only:
 //             its bits follow the interrupt lines and are cleared at the source
 //   mtvec     BASE[31:2] + MODE bit 0 (0 = direct, 1 = vectored)
@@ -65,7 +65,7 @@ module csr_file #(
     output wire [31:0] mepc
 );
 
-    localparam [31:0] MISA_VALUE = 32'h4000_1100;  // MXL = 32, I, M
+    localparam [31:0] MISA_VALUE = 32'h4000_1101;  // MXL = 32, I, M, A
 
     reg        mstatus_mie, mstatus_mpie;
     reg        mie_msie, mie_mtie, mie_meie;

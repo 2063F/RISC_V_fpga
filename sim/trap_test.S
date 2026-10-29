@@ -16,7 +16,7 @@
 #   gp  = 0xD0E once everything has run (the testbench waits for it)
 #
 # Rebuild:
-#   riscv64-unknown-elf-gcc -march=rv32im_zicsr_zifencei -mabi=ilp32 -nostdlib \
+#   riscv64-unknown-elf-gcc -march=rv32ima_zicsr_zifencei -mabi=ilp32 -nostdlib \
 #     -T tools/link.ld sim/trap_test.S -o sim/trap_test.elf
 #   riscv64-unknown-elf-objcopy -O binary sim/trap_test.elf sim/trap_test.bin
 #   python tools/bin2hex.py sim/trap_test.bin > sim/trap_test.hex
@@ -101,10 +101,10 @@ _start:
     EXPECTI a2, 29
 
     csrr a1, misa
-    EXPECTI a1, 0x40001100
+    EXPECTI a1, 0x40001101
     csrw misa, x0                   # WARL: ignored, no trap
     csrr a1, misa
-    EXPECTI a1, 0x40001100
+    EXPECTI a1, 0x40001101
     csrr a1, mhartid
     EXPECTI a1, 0
     csrr a1, mstatus
@@ -173,6 +173,14 @@ t_ill_funct7:
     EXPECT_TRAP 2, t_ill_funct7
     EXPECTI a1, 0x55
 
+t_ill_amo_d:
+    .word 0x00B535AF                # amoadd.d a1, a1, (a0): RV64 only
+    EXPECT_TRAP 2, t_ill_amo_d
+t_ill_lr_rs2:
+    .word 0x101525AF                # lr.w a1, (a0) with rs2 = x1 (reserved)
+    EXPECT_TRAP 2, t_ill_lr_rs2
+    EXPECTI a1, 0x55
+
 # -----------------------------------------------------------------------------
 # 4. Misaligned loads and stores
 # -----------------------------------------------------------------------------
@@ -198,6 +206,26 @@ t_sh_mis:
     li   a0, 0x10100
     lw   a1, 0(a0)
     EXPECTI a1, 0xAABBCCDD          # the store did not happen
+
+    # A misaligned LR is a load fault, a misaligned SC or AMO a store/AMO one.
+    li   a0, 0x10102
+    li   a1, 0x77
+t_lr_mis:
+    lr.w a1, (a0)
+    EXPECT_TRAP 4, t_lr_mis
+    EXPECTI a1, 0x77
+t_amo_mis:
+    amoadd.w a1, a1, (a0)
+    EXPECT_TRAP 6, t_amo_mis
+    lw   a4, 8(s10)
+    EXPECTI a4, 0x10102
+t_sc_mis:
+    sc.w a1, a1, (a0)
+    EXPECT_TRAP 6, t_sc_mis
+    EXPECTI a1, 0x77
+    li   a0, 0x10100
+    lw   a1, 0(a0)
+    EXPECTI a1, 0xAABBCCDD          # neither the AMO nor the SC wrote
 
     mv   a6, s11
     lhu  a1, 2(a0)                  # aligned halfword, odd byte: no trap

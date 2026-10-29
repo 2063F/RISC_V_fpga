@@ -95,6 +95,8 @@ module cpu_top #(
     wire [31:0] dbus0_addr,   dbus1_addr;
     wire [31:0] dbus0_wdata,  dbus1_wdata;
     wire [2:0]  dbus0_funct3, dbus1_funct3;
+    wire        dbus0_amo,    dbus1_amo;
+    wire [4:0]  dbus0_amo_op, dbus1_amo_op;
     wire        dbus0_gnt,    dbus1_gnt;
     wire        dbus0_rvalid, dbus1_rvalid;
 
@@ -124,6 +126,8 @@ module cpu_top #(
         .dbus_addr   (dbus0_addr),
         .dbus_wdata  (dbus0_wdata),
         .dbus_funct3 (dbus0_funct3),
+        .dbus_amo    (dbus0_amo),
+        .dbus_amo_op (dbus0_amo_op),
         .dbus_gnt    (dbus0_gnt),
         .dbus_rvalid (dbus0_rvalid),
         .dbus_rdata  (dbus_rdata),
@@ -161,6 +165,8 @@ module cpu_top #(
                 .dbus_addr   (dbus1_addr),
                 .dbus_wdata  (dbus1_wdata),
                 .dbus_funct3 (dbus1_funct3),
+                .dbus_amo    (dbus1_amo),
+                .dbus_amo_op (dbus1_amo_op),
                 .dbus_gnt    (dbus1_gnt),
                 .dbus_rvalid (dbus1_rvalid),
                 .dbus_rdata  (dbus_rdata),
@@ -179,6 +185,8 @@ module cpu_top #(
             assign dbus1_addr   = 32'd0;
             assign dbus1_wdata  = 32'd0;
             assign dbus1_funct3 = 3'd0;
+            assign dbus1_amo    = 1'b0;
+            assign dbus1_amo_op = 5'd0;
         end
     endgenerate
 
@@ -231,6 +239,8 @@ module cpu_top #(
     assign dbus_addr   = sel1 ? dbus1_addr   : dbus0_addr;
     assign dbus_wdata  = sel1 ? dbus1_wdata  : dbus0_wdata;
     assign dbus_funct3 = sel1 ? dbus1_funct3 : dbus0_funct3;
+    wire        dbus_amo    = sel1 ? dbus1_amo    : dbus0_amo;
+    wire [4:0]  dbus_amo_op = sel1 ? dbus1_amo_op : dbus0_amo_op;
 
     wire bus_wr = dbus_req &&  dbus_we;
     wire bus_rd = dbus_req && !dbus_we;
@@ -249,10 +259,110 @@ module cpu_top #(
         end
     end
 
-    assign dbus_rvalid  = rd_outstanding && rsp_ok;
+    // An SC or AMO answers once its read-modify-write has got to the write.
+    reg [1:0] rmw_step;
+
+    assign dbus_rvalid  = rd_outstanding && rsp_ok && (rmw_step == 2'd0 || rmw_step[1]);
     assign dbus0_rvalid = dbus_rvalid && !rd_owner1;
     assign dbus1_rvalid = dbus_rvalid &&  rd_owner1;
     wire   rd_active    = bus_rd || rd_outstanding;
+
+    // =========================================================================
+    // Atomics (LR.W / SC.W / AMO*.W)
+    // =========================================================================
+    // An atomic request is accepted like a load and holds the bus like one, so
+    // nothing else reaches any slave until it has been answered. LR is a plain
+    // load that also sets the hart's reservation. SC and the AMOs take two
+    // more steps, so that no step has to fit a memory read, an operation and a
+    // memory write into one cycle:
+    //
+    //   accept   : the read is issued; for SC, whether the reservation holds
+    //              is registered (sc_ok)
+    //   step 1   : the old word arrives and is registered (rmw_old)
+    //   step 2   : the new word is written - for SC only if sc_ok - and the
+    //              answer may go back from here on
+    //   step 3   : written; waiting for the answer to be let through
+    //
+    // The answer is the old word, or for SC 0 (stored) / 1 (failed).
+    //
+    // A reservation covers one word. It is lost when the other hart writes
+    // that word, and when the hart's own SC runs, whether or not it stores.
+    wire is_lr   = dbus_amo && (dbus_amo_op == `AMO_LR);
+    wire is_sc   = dbus_amo && (dbus_amo_op == `AMO_SC);
+    wire rmw_acc = bus_rd && dbus_amo && !is_lr;
+
+    reg  [31:0] rmw_old;
+    reg         sc_ok;
+
+    always @(posedge clk) begin
+        if (!rst_n)           rmw_step <= 2'd0;
+        else if (rmw_acc)     rmw_step <= 2'd1;
+        else if (dbus_rvalid) rmw_step <= 2'd0;
+        else if (rmw_step == 2'd1) rmw_step <= 2'd2;
+        else if (rmw_step == 2'd2) rmw_step <= 2'd3;
+    end
+
+    reg  [31:0] rmw_new;
+    always @(*) begin
+        case (dbus_amo_op)
+            `AMO_ADD:  rmw_new = rmw_old + dbus_wdata;
+            `AMO_XOR:  rmw_new = rmw_old ^ dbus_wdata;
+            `AMO_OR:   rmw_new = rmw_old | dbus_wdata;
+            `AMO_AND:  rmw_new = rmw_old & dbus_wdata;
+            `AMO_MIN:  rmw_new = ($signed(rmw_old) < $signed(dbus_wdata)) ? rmw_old : dbus_wdata;
+            `AMO_MAX:  rmw_new = ($signed(rmw_old) < $signed(dbus_wdata)) ? dbus_wdata : rmw_old;
+            `AMO_MINU: rmw_new = (rmw_old < dbus_wdata) ? rmw_old : dbus_wdata;
+            `AMO_MAXU: rmw_new = (rmw_old < dbus_wdata) ? dbus_wdata : rmw_old;
+            default:   rmw_new = dbus_wdata;            // SWAP, SC
+        endcase
+    end
+
+    wire rmw_wr = (rmw_step == 2'd2) && (!is_sc || sc_ok);
+
+    // Every write a slave sees: an accepted store, or the write step of an
+    // SC / AMO. The address is the bus address either way.
+    wire        wr_en   = bus_wr || rmw_wr;
+    wire [31:0] wr_data = rmw_step[1] ? rmw_new : dbus_wdata;
+
+    // Reservations, one per hart
+    reg         res0_valid, res1_valid;
+    reg  [29:0] res0_addr,  res1_addr;
+    wire        res0_hit = res0_valid && (res0_addr == dbus_addr[31:2]);
+    wire        res1_hit = res1_valid && (res1_addr == dbus_addr[31:2]);
+
+    always @(posedge clk) begin
+        if (rmw_acc)
+            sc_ok <= sel1 ? res1_hit : res0_hit;
+    end
+
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            res0_valid <= 1'b0;
+            res1_valid <= 1'b0;
+        end else begin
+            // A write by one hart breaks the other's reservation on that word.
+            if (wr_en &&  sel1 && res0_hit) res0_valid <= 1'b0;
+            if (wr_en && !sel1 && res1_hit) res1_valid <= 1'b0;
+
+            if (bus_rd && is_lr) begin
+                if (sel1) begin
+                    res1_valid <= 1'b1;
+                    res1_addr  <= dbus_addr[31:2];
+                end else begin
+                    res0_valid <= 1'b1;
+                    res0_addr  <= dbus_addr[31:2];
+                end
+            end
+
+            if (rmw_acc && is_sc) begin
+                if (sel1) res1_valid <= 1'b0;
+                else      res0_valid <= 1'b0;
+            end
+
+            if (!hart1_run)
+                res1_valid <= 1'b0;
+        end
+    end
 
     // =========================================================================
     // Memory Interface / Address Decoding Outputs
@@ -302,10 +412,10 @@ module cpu_top #(
     end
 
     // A hart never puts a trapping load or store on the bus, so everything
-    // below can act on bus_wr / bus_rd as they are.
+    // below can act on wr_en / bus_rd as they are.
     assign mem_addr       = dbus_addr;
-    assign mem_write_data = dbus_wdata;
-    assign mem_write_en   = bus_wr && !dmem_sel && !mmio_sel;
+    assign mem_write_data = wr_data;
+    assign mem_write_en   = wr_en && !dmem_sel && !mmio_sel;
     assign mem_read_en    = rd_active && !dmem_sel && !mmio_sel;
 
     // =========================================================================
@@ -313,12 +423,12 @@ module cpu_top #(
     // =========================================================================
     wire uart_busy;
     // tx_start fires for one clock when the CPU stores to the UART TX address
-    wire uart_start = bus_wr && mmio_uart_tx_sel;
+    wire uart_start = wr_en && mmio_uart_tx_sel;
 
     uart_tx uart_tx_inst (
         .clk      (clk),
         .rst_n    (rst_n),
-        .tx_data  (dbus_wdata[7:0]),
+        .tx_data  (wr_data[7:0]),
         .tx_start (uart_start),
         .tx_pin   (uart_tx_pin),
         .tx_busy  (uart_busy)
@@ -346,8 +456,8 @@ module cpu_top #(
     always @(posedge clk) begin
         if (!rst_n)
             hart1_run <= 1'b0;
-        else if (bus_wr && mmio_hartctl_sel)
-            hart1_run <= (HARTS > 1) && dbus_wdata[1];
+        else if (wr_en && mmio_hartctl_sel)
+            hart1_run <= (HARTS > 1) && wr_data[1];
     end
 
     // =========================================================================
@@ -362,8 +472,8 @@ module cpu_top #(
         .clk        (clk),
         .rst_n      (rst_n),
         .addr       (dbus_addr),
-        .write_data (dbus_wdata),
-        .write_en   (bus_wr && mmio_timer_sel),
+        .write_data (wr_data),
+        .write_en   (wr_en && mmio_timer_sel),
         .sel        (mmio_timer_sel),
         .read_data  (timer_read_data),
         .mtime      (mtime),
@@ -399,8 +509,8 @@ module cpu_top #(
     data_memory dmem (
         .clk        (clk),
         .addr       (dbus_addr),
-        .write_data (dbus_wdata),
-        .write_en   (bus_wr && dmem_sel),
+        .write_data (wr_data),
+        .write_en   (wr_en && dmem_sel),
         .read_en    (rd_active && dmem_sel),
         .funct3     (dbus_funct3),
         .read_data  (internal_mem_read_data)
@@ -415,7 +525,9 @@ module cpu_top #(
     wire [1:0]  mem_byte_offset = ld_offset_q;
 
     always @(*) begin
-        if (ld_dmem_q) begin
+        if (rmw_step[1]) begin
+            selected_mem_data = rmw_old;            // SC / AMO answer
+        end else if (ld_dmem_q) begin
             selected_mem_data = internal_mem_read_data;
         end else if (ld_imem_q) begin
             // Byte/halfword selection for .rodata loads (LBU, LB, LHU, LH, LW)
@@ -466,5 +578,12 @@ module cpu_top #(
     end
 
     assign dbus_rdata = selected_mem_data;
+
+    // SC / AMO step 1: keep the old word (the AMO's operand and answer), or
+    // for SC the answer itself.
+    always @(posedge clk) begin
+        if (rmw_step == 2'd1)
+            rmw_old <= is_sc ? {31'd0, !sc_ok} : selected_mem_data;
+    end
 
 endmodule

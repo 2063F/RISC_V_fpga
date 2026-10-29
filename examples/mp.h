@@ -10,8 +10,9 @@
 //
 // The harts share the data RAM without caches, and every access is performed
 // in program order, so a flag written by one hart after its data is enough to
-// hand that data to the other. There are no atomic instructions yet: a
-// variable written by both harts needs a lock built some other way.
+// hand that data to the other. A variable written by both harts needs the A
+// extension (build with -march=rv32ima...): GCC's __atomic_* builtins compile
+// to AMO*.W and LR.W/SC.W, which the SoC performs atomically.
 
 #define HART_RUN    ((volatile unsigned int *)0x80000200)   // bit h: hart h runs
 

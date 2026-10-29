@@ -51,14 +51,19 @@
 // Data bus
 // --------
 // The hart drives one request at a time from EX and holds dbus_addr,
-// dbus_wdata, dbus_we and dbus_funct3 steady until it completes (EX is frozen
-// meanwhile):
+// dbus_wdata, dbus_we, dbus_funct3, dbus_amo and dbus_amo_op steady until it
+// completes (EX is frozen meanwhile):
 //
 //   - dbus_req is high while a load or store is waiting to be accepted.
 //   - dbus_gnt accepts it at the next clock edge. A store is then done; a load
 //     has issued its read.
 //   - dbus_rvalid answers an accepted load with dbus_rdata, already sized and
 //     sign-extended for dbus_funct3. dbus_req stays low until then.
+//
+// LR.W, SC.W and the AMOs go out as a load with dbus_amo set, dbus_amo_op =
+// funct5 and the rs2 operand on dbus_wdata. The SoC carries out the whole
+// operation and answers like a load: the old memory word (LR, AMO) or the SC
+// result (0 = stored, 1 = failed), which the hart writes to rd.
 //
 // With a single hart dbus_gnt is tied high and dbus_rvalid follows one cycle
 // after, which is exactly the old fixed timing: stores take one cycle, loads
@@ -89,6 +94,8 @@ module rv_core #(
     output wire [31:0] dbus_addr,
     output wire [31:0] dbus_wdata,
     output wire [2:0]  dbus_funct3,
+    output wire        dbus_amo,      // LR / SC / AMO, with dbus_we = 0
+    output wire [4:0]  dbus_amo_op,   // funct5
     input  wire        dbus_gnt,
     input  wire        dbus_rvalid,
     input  wire [31:0] dbus_rdata,
@@ -135,7 +142,7 @@ module rv_core #(
     wire [4:0]  id_alu_op;
     wire        id_alu_src_b;
     wire        id_branch, id_jump;
-    wire        id_mem_read, id_mem_write;
+    wire        id_mem_read, id_mem_write, id_amo;
     wire [1:0]  id_wb_sel;
     wire [31:0] id_imm;
     wire        id_dec_illegal, id_ecall, id_ebreak, id_mret;
@@ -159,6 +166,7 @@ module rv_core #(
     reg         ex_reg_write;
     reg         ex_branch, ex_jump;
     reg         ex_mem_read, ex_mem_write;
+    reg         ex_amo;
     reg  [1:0]  ex_wb_sel;
     reg  [2:0]  ex_funct3;
     reg  [6:0]  ex_opcode;
@@ -206,8 +214,10 @@ module rv_core #(
     // exactly when imm[1] is set. JALR clears bit 0 of its target itself.
     wire is_jalr          = (ex_opcode == `OP_JALR);
     wire exc_jump_mis     = ex_jump && (is_jalr ? addr_lo[1] : ex_imm[1]);
-    wire exc_load_mis     = ex_mem_read  && ls_misaligned;
-    wire exc_store_mis    = ex_mem_write && ls_misaligned;
+    // A misaligned SC or AMO is a store/AMO fault, a misaligned LR a load one.
+    wire ex_amo_store     = ex_amo && (ex_inst[31:27] != `AMO_LR);
+    wire exc_load_mis     = ex_mem_read  && !ex_amo_store && ls_misaligned;
+    wire exc_store_mis    = (ex_mem_write || ex_amo_store) && ls_misaligned;
 
     wire exc_early = ex_valid && (ex_fetch_fault || ex_illegal || ex_ecall ||
                                   ex_ebreak || exc_jump_mis ||
@@ -359,6 +369,8 @@ module rv_core #(
     assign dbus_addr   = alu_result;
     assign dbus_wdata  = ex_rs2_data;
     assign dbus_funct3 = ex_funct3;
+    assign dbus_amo    = ex_amo;
+    assign dbus_amo_op = ex_inst[31:27];
 
     assign ibus_addr = pc;
     assign ibus_ce   = !stall;
@@ -415,6 +427,7 @@ module rv_core #(
         .jump      (id_jump),
         .mem_read  (id_mem_read),
         .mem_write (id_mem_write),
+        .amo       (id_amo),
         .wb_sel    (id_wb_sel),
         .illegal   (id_dec_illegal),
         .ecall     (id_ecall),
@@ -561,6 +574,7 @@ module rv_core #(
             ex_jump        <= 1'b0;
             ex_mem_read    <= 1'b0;
             ex_mem_write   <= 1'b0;
+            ex_amo         <= 1'b0;
             ex_wb_sel      <= 2'd0;
             ex_funct3      <= 3'd0;
             ex_opcode      <= 7'd0;
@@ -611,6 +625,7 @@ module rv_core #(
                 ex_jump      <= id_jump;
                 ex_mem_read  <= id_mem_read;
                 ex_mem_write <= id_mem_write;
+                ex_amo       <= id_amo;
                 ex_wb_sel    <= id_wb_sel;
                 ex_funct3    <= id_inst[14:12];
                 ex_opcode    <= id_inst[6:0];

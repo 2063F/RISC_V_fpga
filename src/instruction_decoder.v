@@ -11,6 +11,11 @@
 // ECALL / EBREAK / MRET / WFI / CSR*. The other outputs may still be non-zero
 // for an illegal instruction; cpu_top suppresses all of its side effects.
 //
+// LR.W, SC.W and the AMO*.W instructions decode as loads (mem_read, write-back
+// from memory) with amo set: the hart sends them to the SoC as a single bus
+// request carrying rs2 and funct5, and the SoC performs the whole operation
+// atomically (see cpu_top.v). Their address is rs1 alone, hence IMM_Z.
+//
 // FENCE and FENCE.I decode as no-ops: there is no cache or store buffer, and
 // the instruction ROM cannot be written. WFI is a no-op too, which the spec
 // allows - software has to wrap it in a loop that re-checks its condition.
@@ -44,6 +49,7 @@ module instruction_decoder (
     // Memory control
     output reg         mem_read,
     output reg         mem_write,
+    output reg         amo,       // LR / SC / AMO (with mem_read)
     
     // Write-back control
     output reg  [1:0]  wb_sel,    // 0: ALU, 1: Memory, 2: PC+4 (JAL/JALR), 3: CSR
@@ -76,6 +82,7 @@ module instruction_decoder (
         jump      = 1'b0;
         mem_read  = 1'b0;
         mem_write = 1'b0;
+        amo       = 1'b0;
         wb_sel    = 2'd0; // Default ALU
         illegal   = 1'b0;
         ecall     = 1'b0;
@@ -242,6 +249,25 @@ module instruction_decoder (
                 imm_type  = `IMM_I;
                 wb_sel    = 2'd2; // Write back PC + 4
                 illegal   = (funct3 != 3'b000);
+            end
+
+            // ------------------------------------------------------------------
+            // Atomics (A extension, word forms only)
+            // ------------------------------------------------------------------
+            `OP_AMO: begin
+                reg_write = 1'b1;
+                mem_read  = 1'b1;
+                amo       = 1'b1;
+                alu_src_b = 1'b1;
+                imm_type  = `IMM_Z;
+                wb_sel    = `WB_MEM;
+                case (inst[31:27])
+                    `AMO_LR:   illegal = (funct3 != `FUNCT3_WORD) || (rs2 != 5'd0);
+                    `AMO_SC, `AMO_SWAP, `AMO_ADD, `AMO_XOR, `AMO_AND, `AMO_OR,
+                    `AMO_MIN, `AMO_MAX, `AMO_MINU, `AMO_MAXU:
+                               illegal = (funct3 != `FUNCT3_WORD);
+                    default:   illegal = 1'b1;
+                endcase
             end
 
             // ------------------------------------------------------------------
