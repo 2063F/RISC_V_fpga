@@ -31,6 +31,9 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
     16進変換、UART RX のエコーまで一通り動作
   - `uart_echo_c` : 起動メッセージのあとエコーループ。1文字ずつ10回、
     および20文字連続 (15ms間隔) を取りこぼしなくエコーすることを確認
+  - `multicore_demo` : 2 ハート構成で `ALL OK` まで出力。2 ハート同時のメモリアクセス、
+    RAM 上の `.rodata`、ピンポン 1000 往復、AMOADD / LR・SC / スピンロックでの
+    共有カウンタ同時更新、コア間割り込みがすべて期待どおり
 
 ### 実測値 (printf_demo.hex で合成)
 
@@ -65,7 +68,7 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 | 8 | 3段パイプライン化 + フォワーディング | ✅ |
 | 9 | CSR / 例外 / 割り込み | ✅ |
 | 10+ | SDRAM | 🔧 作業中 |
-| 11 | マルチコア (2ハート) + A拡張 | 🔧 シミュレーションで動作確認済み (実機未確認) |
+| 11 | マルチコア (2ハート) + A拡張 | ✅ (実機確認済み。2ハート構成のタイミングは未計測) |
 
 ## ISA
 
@@ -503,6 +506,7 @@ python tools/bin2hex.py examples/multicore_demo.bin > examples/multicore_demo.he
   - ボタン/LED の MMIO 確認なら `examples/button_led.hex`
   - UART まで一通り動かすなら `examples/printf_demo.hex`
   - 割り込みまで試すなら `examples/trap_demo.hex`
+  - 2 ハートとアトミック命令を試すなら `examples/multicore_demo.hex`
 2. `src/fpga_top.v` の `INIT_FILE` を使いたい hex に合わせます。
   - 既定値は `examples/loop55.hex` です。
   - `build.tcl` はここから hex のパスを読むので、変更箇所はこの1か所だけです。
@@ -553,6 +557,8 @@ powershell -ExecutionPolicy Bypass -File tools/uart_monitor.ps1 -Interactive -Sh
   - `printf_demo` / `uart_echo_c` : 115200bps のシリアル端末に出力
   - `trap_demo` : 例外の報告のあと、`led[1]` が 500ms ごとに反転して `tick N` を出力。
     送った文字は `rx 'X'` として返る
+  - `multicore_demo` : 各項目の `ok` のあと `ALL OK` を出力 (2 ハート構成が必要。
+    `fpga_top` は既定で 2 ハート)
 
 > `tools/program.ps1` はビットストリームより新しい `src/*.v` があると警告します。
 > 合成し直さずに古いビットストリームを焼く事故を防ぐためです。
