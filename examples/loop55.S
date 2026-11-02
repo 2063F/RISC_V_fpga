@@ -20,3 +20,7 @@ loop:
     addi  x2, x2, 1         # i++
     blt   x2, x3, loop      # while (i < 11)
     nop                     # x1 = 55, x2 = 11
+halt:
+    j     halt              # stay here: past the end of the image the ROM
+                            # reads as 0 on the board (an illegal instruction),
+                            # which would trap to 0 and restart the sum
