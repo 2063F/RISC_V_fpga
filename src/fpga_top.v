@@ -17,7 +17,7 @@
 // =============================================================================
 
 module fpga_top #(
-    parameter INIT_FILE = "examples/multicore_demo.hex",
+    parameter INIT_FILE = "examples/othello_embedded/othello.hex",
     parameter SPACE_RESET_CYCLES = 150_000_000 // Space held this long = reset (3 s)
 ) (
     input  wire       clk,       // 50 MHz onboard crystal oscillator
