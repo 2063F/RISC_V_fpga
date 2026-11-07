@@ -16,6 +16,7 @@
 `define OP_OP       7'b0110011   // Register-Register ALU (ADD, SUB, etc.)
 `define OP_FENCE    7'b0001111   // Memory Fence (FENCE, FENCE.I)
 `define OP_SYSTEM   7'b1110011   // System (ECALL, EBREAK, MRET, WFI, CSR*)
+`define OP_AMO      7'b0101111   // Atomics (LR.W, SC.W, AMO*.W)
 
 // =========================================================================
 // ALU Operation Codes (5-bit width)
@@ -100,6 +101,23 @@
 `define IMM_B  3'd2   // B-type
 `define IMM_U  3'd3   // U-type
 `define IMM_J  3'd4   // J-type
+`define IMM_Z  3'd5   // zero (atomics: the address is rs1 alone)
+
+// =========================================================================
+// Atomic operations (opcode OP_AMO, funct5 = inst[31:27])
+// =========================================================================
+// aq/rl (inst[26:25]) need no action: memory is sequentially consistent.
+`define AMO_ADD    5'b00000
+`define AMO_SWAP   5'b00001
+`define AMO_LR     5'b00010
+`define AMO_SC     5'b00011
+`define AMO_XOR    5'b00100
+`define AMO_OR     5'b01000
+`define AMO_AND    5'b01100
+`define AMO_MIN    5'b10000
+`define AMO_MAX    5'b10100
+`define AMO_MINU   5'b11000
+`define AMO_MAXU   5'b11100
 
 // =========================================================================
 // SYSTEM instructions (opcode OP_SYSTEM)

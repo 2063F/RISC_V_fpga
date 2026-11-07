@@ -61,10 +61,10 @@ module tb_trap;
         end
     endtask
 
-    wire [31:0] passed     = uut.regfile.regs[8];
-    wire [31:0] failed     = uut.regfile.regs[9];
-    wire [31:0] first_fail = uut.regfile.regs[19];
-    wire [31:0] done_flag  = uut.regfile.regs[3];
+    wire [31:0] passed     = uut.core0.regfile.regs[8];
+    wire [31:0] failed     = uut.core0.regfile.regs[9];
+    wire [31:0] first_fail = uut.core0.regfile.regs[19];
+    wire [31:0] done_flag  = uut.core0.regfile.regs[3];
 
     initial begin
         $display("=== CSR / Exception / Interrupt Testbench ===");

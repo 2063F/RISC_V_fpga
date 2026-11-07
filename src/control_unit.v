@@ -12,7 +12,7 @@
 // Description: Control Unit for the EX stage of the pipelined RISC-V CPU.
 //              Generates the program counter select from the instruction and
 //              the register operands. Branches and jumps are resolved here,
-//              in EX. (The ALU operand selects are made in ID; see cpu_top.)
+//              in EX. (The ALU operand selects are made in ID; see rv_core.)
 // 
 // Dependencies: riscv_defines.vh
 // 

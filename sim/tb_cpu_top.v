@@ -62,12 +62,12 @@ module tb_cpu_top;
         input [31:0] expected_val;
         input [127:0] name;
         begin
-            if (uut.regfile.regs[reg_num] === expected_val) begin
+            if (uut.core0.regfile.regs[reg_num] === expected_val) begin
                 $display("  PASS  %s: x%0d = %0d (0x%h)", name, reg_num, expected_val, expected_val);
                 pass_count = pass_count + 1;
             end else begin
                 $display("  FAIL  %s: x%0d = %0d (0x%h) | expected: %0d (0x%h)", 
-                         name, reg_num, uut.regfile.regs[reg_num], uut.regfile.regs[reg_num], 
+                         name, reg_num, uut.core0.regfile.regs[reg_num], uut.core0.regfile.regs[reg_num], 
                          expected_val, expected_val);
                 fail_count = fail_count + 1;
             end

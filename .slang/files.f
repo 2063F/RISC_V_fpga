@@ -3,6 +3,7 @@ src/board_io.v
 src/control_unit.v
 src/csr_file.v
 src/cpu_top.v
+src/rv_core.v
 src/data_memory.v
 src/fpga_top.v
 src/imm_gen.v

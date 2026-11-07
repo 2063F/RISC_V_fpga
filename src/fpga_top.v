@@ -3,7 +3,8 @@
 // fpga_top.v - FPGA Top-Level Module for RISC-V CPU on Tang Primer 25K
 // =============================================================================
 // Features:
-// - Instantiates the three-stage pipelined RV32IM CPU (cpu_top).
+// - Instantiates the RV32IM CPU (cpu_top) with two harts. Hart 1 stays in
+//   reset unless the program starts it, so single-hart programs run as before.
 // - Loads the Othello program by default (INIT_FILE); examples/loop55.hex
 //   (1+2+...+10 = 55) is the minimal bring-up test.
 // - Exposes simple MMIO for LED, button, 8x8 key matrix, 8x8 LED matrix and
@@ -79,7 +80,8 @@ module fpga_top #(
     wire        usbkey_pop;
 
     cpu_top #(
-        .INIT_FILE(INIT_FILE)
+        .INIT_FILE (INIT_FILE),
+        .NUM_HARTS (2)
     ) cpu (
         .clk            (clk),
         .rst_n          (cpu_rst_n),

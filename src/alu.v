@@ -8,7 +8,7 @@
 // Key differences from x86 ALU:
 //   - No flag registers (CF, ZF, SF, OF, PF, AF) — not needed!
 //   - Always 32-bit — no 8/16/32-bit size switching
-//   - Only a 'zero' output (cpu_top's branches compare rs1/rs2 directly)
+//   - Only a 'zero' output (rv_core's branches compare rs1/rs2 directly)
 //   - Much simpler: ~100 lines vs 357 lines for x86
 // =============================================================================
 
