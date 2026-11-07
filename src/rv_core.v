@@ -55,6 +55,11 @@
 // completes (EX is frozen meanwhile):
 //
 //   - dbus_req is high while a load or store is waiting to be accepted.
+//   - dbus_pend is dbus_req before the trap decision: a load or store sits in
+//     EX and has not been sent yet. It comes straight from registers, so a
+//     shared bus can pick between harts on it without waiting for the
+//     interrupt logic; dbus_req (never high without dbus_pend) then says
+//     whether the access really goes ahead.
 //   - dbus_gnt accepts it at the next clock edge. A store is then done; a load
 //     has issued its read.
 //   - dbus_rvalid answers an accepted load with dbus_rdata, already sized and
@@ -90,6 +95,7 @@ module rv_core #(
 
     // Data bus
     output wire        dbus_req,
+    output wire        dbus_pend,     // dbus_req before the trap decision
     output wire        dbus_we,
     output wire [31:0] dbus_addr,
     output wire [31:0] dbus_wdata,
@@ -289,7 +295,8 @@ module rv_core #(
     //
     // load_pending is set once the bus has taken the load, and the load writes
     // back in the cycle dbus_rvalid arrives.
-    wire ex_mem    = ex_valid && (ex_mem_read || ex_mem_write) && !trap_early;
+    wire ex_mem_any = ex_valid && (ex_mem_read || ex_mem_write);
+    wire ex_mem    = ex_mem_any && !trap_early;
     wire mem_req   = ex_mem && !load_pending;
     wire mem_stall = mem_req ? (ex_mem_read || !dbus_gnt)
                              : (ex_mem && !dbus_rvalid);
@@ -364,6 +371,7 @@ module rv_core #(
     // =========================================================================
     // The address is the ALU result itself; the SoC decodes it.
     assign dbus_req    = mem_req;
+    assign dbus_pend   = ex_mem_any && !load_pending;
     assign dbus_we     = ex_mem_write;
     assign dbus_addr   = alu_result;
     assign dbus_wdata  = ex_rs2_data;
