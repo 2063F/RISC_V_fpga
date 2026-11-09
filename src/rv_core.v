@@ -409,11 +409,16 @@ module rv_core #(
     assign dbus_amo    = ex_amo;
     assign dbus_amo_op = ex_inst[31:27];
 
-    // The ROM word is used up unless a 16-bit instruction came from hold
+    // The ROM word is used up unless a 16-bit instruction came from hold.
+    //
+    // A redirect does not need to enable the ROM: the word read in that cycle
+    // is thrown away (ifid_valid goes low) and the new target is presented in
+    // the next one, enabled because ifid_valid is then low. Leaving redirect
+    // out keeps the branch comparison off the ROM's clock enable.
     wire fetch_next = !ifid_valid || !(hold_v && id_rvc);
 
     assign ibus_addr = fpc;
-    assign ibus_ce   = !stall && (redirect || fetch_next);
+    assign ibus_ce   = !stall && fetch_next;
 
     // =========================================================================
     // CSRs and trap state

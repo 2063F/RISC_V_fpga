@@ -305,6 +305,25 @@ module cpu_top #(
     reg  [31:0] rmw_old;
     reg         sc_ok;
 
+    // The operation, its operand and whether it is an SC are registered when
+    // the request is accepted, so that the read-modify-write below works from
+    // registers only. Taken straight from the bus they went through the
+    // arbiter's mux select (win1) and then the AMO adder and comparators
+    // into wr_data and every slave's write port - the critical path of the
+    // design - although in the write step the mux only ever shows the
+    // owner's own, unchanged request.
+    reg  [31:0] rmw_arg;
+    reg  [4:0]  rmw_op;
+    reg         rmw_sc;
+
+    always @(posedge clk) begin
+        if (rmw_acc) begin
+            rmw_arg <= dbus_wdata;
+            rmw_op  <= dbus_amo_op;
+            rmw_sc  <= is_sc;
+        end
+    end
+
     always @(posedge clk) begin
         if (!rst_n)           rmw_step <= 2'd0;
         else if (rmw_acc)     rmw_step <= 2'd1;
@@ -315,20 +334,20 @@ module cpu_top #(
 
     reg  [31:0] rmw_new;
     always @(*) begin
-        case (dbus_amo_op)
-            `AMO_ADD:  rmw_new = rmw_old + dbus_wdata;
-            `AMO_XOR:  rmw_new = rmw_old ^ dbus_wdata;
-            `AMO_OR:   rmw_new = rmw_old | dbus_wdata;
-            `AMO_AND:  rmw_new = rmw_old & dbus_wdata;
-            `AMO_MIN:  rmw_new = ($signed(rmw_old) < $signed(dbus_wdata)) ? rmw_old : dbus_wdata;
-            `AMO_MAX:  rmw_new = ($signed(rmw_old) < $signed(dbus_wdata)) ? dbus_wdata : rmw_old;
-            `AMO_MINU: rmw_new = (rmw_old < dbus_wdata) ? rmw_old : dbus_wdata;
-            `AMO_MAXU: rmw_new = (rmw_old < dbus_wdata) ? dbus_wdata : rmw_old;
-            default:   rmw_new = dbus_wdata;            // SWAP, SC
+        case (rmw_op)
+            `AMO_ADD:  rmw_new = rmw_old + rmw_arg;
+            `AMO_XOR:  rmw_new = rmw_old ^ rmw_arg;
+            `AMO_OR:   rmw_new = rmw_old | rmw_arg;
+            `AMO_AND:  rmw_new = rmw_old & rmw_arg;
+            `AMO_MIN:  rmw_new = ($signed(rmw_old) < $signed(rmw_arg)) ? rmw_old : rmw_arg;
+            `AMO_MAX:  rmw_new = ($signed(rmw_old) < $signed(rmw_arg)) ? rmw_arg : rmw_old;
+            `AMO_MINU: rmw_new = (rmw_old < rmw_arg) ? rmw_old : rmw_arg;
+            `AMO_MAXU: rmw_new = (rmw_old < rmw_arg) ? rmw_arg : rmw_old;
+            default:   rmw_new = rmw_arg;               // SWAP, SC
         endcase
     end
 
-    wire rmw_wr = (rmw_step == 2'd2) && (!is_sc || sc_ok);
+    wire rmw_wr = (rmw_step == 2'd2) && (!rmw_sc || sc_ok);
 
     // Every write a slave sees: an accepted store, or the write step of an
     // SC / AMO. The address is the bus address either way.
@@ -597,7 +616,7 @@ module cpu_top #(
     // for SC the answer itself.
     always @(posedge clk) begin
         if (rmw_step == 2'd1)
-            rmw_old <= is_sc ? {31'd0, !sc_ok} : selected_mem_data;
+            rmw_old <= rmw_sc ? {31'd0, !sc_ok} : selected_mem_data;
     end
 
 endmodule
