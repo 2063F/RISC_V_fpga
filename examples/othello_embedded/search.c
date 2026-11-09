@@ -201,9 +201,23 @@ static struct {
     unsigned search_id;     /* find_best_move ごとに増える (キラー表のリセット用) */
 } job;
 
+/*
+ * 待ちループで共有変数を読み続けると、データバス (2 ハートで 1 本) を
+ * 取り合って、相手のハートの探索を遅くする。読み直す前に、バスを使わない
+ * nop を SPIN_PAUSE 回はさむ (命令はハートごとの ROM ポートから取る)。
+ */
+#ifndef SPIN_PAUSE
+#define SPIN_PAUSE 64
+#endif
+
+static void spin_pause(void) {
+    for (int i = 0; i < SPIN_PAUSE; i++)
+        __asm__ volatile ("nop");
+}
+
 static void job_lock(void) {
     while (__atomic_exchange_n(&job.lock, 1u, __ATOMIC_ACQUIRE))
-        ;
+        spin_pause();
 }
 
 static void job_unlock(void) {
@@ -271,7 +285,7 @@ static double split(Bitboard black, Bitboard white, int player_is_black, int dep
 
     split_worker(&ctx[0]);
     while (__atomic_load_n(&job.busy, __ATOMIC_ACQUIRE))
-        ;
+        spin_pause();
     job_active = 0;
 
     if (out_move) *out_move = job.sqs[job.best_idx];
@@ -285,7 +299,7 @@ void search_hart_main(void) {
     for (;;) {
         unsigned g;
         while ((g = __atomic_load_n(&job.gen, __ATOMIC_ACQUIRE)) == seen)
-            ;
+            spin_pause();
         seen = g;
         if (job.search_id != search) {  /* 新しい探索: キラー表を消す */
             search = job.search_id;

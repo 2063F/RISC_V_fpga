@@ -57,6 +57,7 @@ module tb_othello_mp;
             end
             #(BIT_NS + BIT_HALF_NS);
             $write("%c", data);
+            $fflush;
             tail = {tail[8*15-1:0], data};
             if (tail[8*6-1:0] == "ALL OK") begin
                 #(BIT_NS * 20);
