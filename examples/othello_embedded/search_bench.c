@@ -19,7 +19,7 @@
 #include <stdint.h>
 
 #ifndef BENCH_DEPTH
-#define BENCH_DEPTH 3
+#define BENCH_DEPTH 2       // depth 3 takes Icarus much longer
 #endif
 #ifndef BENCH_POSITIONS
 #define BENCH_POSITIONS 3
