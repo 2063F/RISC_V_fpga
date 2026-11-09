@@ -12,19 +12,18 @@ reference output that 2.7.4 ships. Later versions of the suite no longer ship
 reference outputs (they are generated with the Sail model), which is why this
 pins 2.7.4. Test names may be given as e.g. "add-01" to run a subset.
 
-Covered: rv32i_m/I, M and privilege. Zifencei is left out: its test
+Covered: rv32i_m/I, M, C and privilege. Each test is built for the ISA in
+its RVTEST_ISA line (plus Zicsr), as the references were: the I, M and
+privilege tests as 32-bit code, the C tests with compressed instructions.
+The CPU always has C, which the references also assume (the misaligned
+branch/jump tests in privilege expect a 2-byte aligned target to be legal).
+Zifencei is left out: its test
 rewrites an instruction and executes it, and this CPU fetches from ROM only.
 Tests whose code does not fit in the 32 KB ROM (the branch tests and jal-01,
 over 200 KB each) are split into parts that do, each part a run of the
 test's cases, and every part's signature is checked against the reference.
 A case too large for the ROM even on its own (some jal-01 cases jump over
 hundreds of KB) is left out and counted in the result.
-
-Where this directory has its own references/<test>.reference_output, it is
-used instead of the suite's. Those are the misaligned branch/jump tests in
-privilege: the shipped references assume the C extension, under which a
-2-byte aligned target is legal, while this CPU (no C) must trap. Their trap
-records (mcause 0, mepc = the jump, mtval = its target) were checked by hand.
 
 arch_test.h of 2.7.4 contains "la x0, ..." (in TEST_JALR_OP), which current
 binutils reject. The script builds against a copy in which that one LA is
@@ -45,7 +44,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-SUITES = ["I", "M", "privilege"]
+SUITES = ["I", "M", "C", "privilege"]
 
 CC = "riscv64-unknown-elf-gcc"
 OBJCOPY = "riscv64-unknown-elf-objcopy"
@@ -65,6 +64,12 @@ def build_sim(work: Path) -> Path:
     if r.returncode != 0:
         sys.exit("iverilog failed:\n" + r.stdout + r.stderr)
     return out
+
+
+def march_for(src: Path) -> str:
+    """-march from the test's RVTEST_ISA("RV32...") line, plus Zicsr."""
+    m = re.search(r'RVTEST_ISA\("RV32([A-Z]+)', src.read_text())
+    return "-march=rv32" + (m.group(1).lower() if m else "i") + "_zicsr"
 
 
 def defines_for(src: Path) -> list[str]:
@@ -96,13 +101,14 @@ TOO_BIG = "does not fit in the 32 KB ROM"
 UNWRITTEN = "deadbeef"      # what the signature area is filled with
 
 
-def build_and_run(env_dir: Path, src: Path, defines: list[str], vvp: Path, d: Path):
+def build_and_run(env_dir: Path, src: Path, march: str, defines: list[str], vvp: Path,
+                  d: Path):
     """Build one program and run it. Returns the signature words, TOO_BIG,
     or an error string starting with "BUILD FAILED" / "DID NOT HALT"."""
     d.mkdir(parents=True, exist_ok=True)
     elf, binf, hexf, sig = d / "t.elf", d / "t.bin", d / "t.hex", d / "t.sig"
 
-    r = run([CC, "-march=rv32im_zicsr", "-mabi=ilp32", "-static", "-mcmodel=medany",
+    r = run([CC, march, "-mabi=ilp32", "-static", "-mcmodel=medany",
              "-nostdlib", "-nostartfiles", "-DXLEN=32",
              "-I", str(HERE), "-I", str(env_dir), *defines,
              "-T", str(HERE / "link.ld"), str(src), "-o", str(elf)])
@@ -160,7 +166,7 @@ def split_cases(text: str):
     return "".join(lines[:first]), cases, "".join(lines[endif:])
 
 
-def run_split(env_dir, src, defines, vvp, d, want):
+def run_split(env_dir, src, march, defines, vvp, d, want):
     head, cases, tail = split_cases(src.read_text())
     written = [False] * len(want)
     skipped, parts = [], 0
@@ -171,7 +177,7 @@ def run_split(env_dir, src, defines, vvp, d, want):
         part.mkdir(parents=True, exist_ok=True)
         psrc = part / src.name
         psrc.write_text(head + cases[a][0] + "".join(c for _, c in cases[a:b]) + tail)
-        got = build_and_run(env_dir, psrc, defines, vvp, part)
+        got = build_and_run(env_dir, psrc, march, defines, vvp, part)
         if got == TOO_BIG:
             if b - a == 1:
                 skipped.append(a)
@@ -202,11 +208,12 @@ def run_split(env_dir, src, defines, vvp, d, want):
 def run_one(env_dir: Path, src: Path, ref: Path, vvp: Path, work: Path) -> tuple[str, str]:
     name = src.stem
     defines = defines_for(src)
+    march = march_for(src)
     want = [w.lower() for w in ref.read_text().split()]
 
-    got = build_and_run(env_dir, src, defines, vvp, work / name)
+    got = build_and_run(env_dir, src, march, defines, vvp, work / name)
     if got == TOO_BIG:
-        return name, run_split(env_dir, src, defines, vvp, work / name, want)
+        return name, run_split(env_dir, src, march, defines, vvp, work / name, want)
     if isinstance(got, str):
         return name, got
     if len(got) != len(want):
@@ -234,9 +241,7 @@ def main() -> None:
         for src in sorted((base / s / "src").glob("*.S")):
             if args.tests and src.stem not in args.tests:
                 continue
-            ref = HERE / "references" / (src.stem + ".reference_output")
-            if not ref.exists():
-                ref = base / s / "references" / (src.stem + ".reference_output")
+            ref = base / s / "references" / (src.stem + ".reference_output")
             jobs.append((s, src, ref))
     if not jobs:
         sys.exit("no tests found - is this a riscv-arch-test 2.7.4 checkout?")

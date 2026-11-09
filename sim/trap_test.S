@@ -101,10 +101,10 @@ _start:
     EXPECTI a2, 29
 
     csrr a1, misa
-    EXPECTI a1, 0x40001101
+    EXPECTI a1, 0x40001105
     csrw misa, x0                   # WARL: ignored, no trap
     csrr a1, misa
-    EXPECTI a1, 0x40001101
+    EXPECTI a1, 0x40001105
     csrr a1, mhartid
     EXPECTI a1, 0
     csrr a1, mstatus
@@ -159,9 +159,26 @@ t_ill_ro:
     csrr a1, cycle                  # reading it is fine
     EXPECT s11, a6
 
-t_ill_rvc:
-    .word 0x00010001                # two c.nop: compressed is not supported
-    EXPECT_TRAP 2, t_ill_rvc
+    # Compressed instructions (assembled as .half, as this file is built
+    # without C so that every other test stays 32-bit)
+    mv   a6, s11
+    .half 0x0001                    # c.nop
+    .half 0x0001                    # c.nop
+    EXPECT s11, a6                  # no trap
+
+t_ill_c0:
+    .half 0x0000                    # the all-zero halfword is illegal
+    .half 0x0001                    # (skipped by the handler's mepc + 4)
+    EXPECT_TRAP 2, t_ill_c0
+    lw   a4, 8(s10)
+    EXPECTI a4, 0                   # mtval = the 16-bit instruction
+
+t_ill_c16sp:
+    .half 0x6101                    # c.addi16sp sp, 0: reserved
+    .half 0x0001
+    EXPECT_TRAP 2, t_ill_c16sp
+    lw   a4, 8(s10)
+    EXPECTI a4, 0x6101
 
 t_ill_sret:
     .word 0x10200073                # sret: no supervisor mode
@@ -235,41 +252,62 @@ t_sc_mis:
     EXPECTI a2, 0xAA
 
 # -----------------------------------------------------------------------------
-# 5. Misaligned jump and branch targets
+# 5. Halfword-aligned code (C extension)
 # -----------------------------------------------------------------------------
-    la   t1, jump_target
-    li   a1, 0x66
-t_jalr_mis:
-    jalr a1, 2(t1)                  # target jump_target + 2
-    j    1f
-jump_target:
-    nop
-    nop
-1:
-    EXPECT_TRAP 0, t_jalr_mis
-    EXPECTI a1, 0x66                # link register untouched
-    lw   a4, 8(s10)
-    addi a5, t1, 2
-    EXPECT a4, a5
-
-t_jal_mis:
-    .word 0x006005EF                # jal a1, .+6
-    nop
-    nop
-    EXPECT_TRAP 0, t_jal_mis
-
+# Jump and branch targets need only be halfword aligned, a 32-bit instruction
+# may straddle two words, and a 16-bit jump links to pc + 2.
+    li   a1, 0
     mv   a6, s11
-    .word 0x00001363                # bne x0, x0, .+6: not taken, no trap
-    EXPECT s11, a6
-t_beq_mis:
+
+    la   t1, half_a
+t_jalr_half:
+    jalr a2, 2(t1)                  # to half_a + 2
+    .word 0x00000013                # (not reached)
+half_a:
+    .half 0x0001                    # (skipped)
+    .half 0x0585                    # c.addi a1, 1
+    .half 0x0001                    # c.nop
+    .half 0x8593, 0x0025            # addi a1, a1, 2, straddling two words
+    .half 0x0001                    # c.nop, back to word alignment
+    EXPECTI a1, 3
+    la   a5, t_jalr_half + 4
+    EXPECT a2, a5
+
+t_jal_half:
+    .word 0x006006EF                # jal a3, .+6
+    .half 0x0001                    # (skipped)
+    .half 0x0589                    # c.addi a1, 2   (at .+6)
+    EXPECTI a1, 5
+    la   a5, t_jal_half + 4
+    EXPECT a3, a5
+
+    .word 0x00001363                # bne x0, x0, .+6: not taken
     .word 0x00000363                # beq x0, x0, .+6: taken
-    nop
-    nop
-    EXPECT_TRAP 0, t_beq_mis
-    lw   a4, 8(s10)
-    la   a5, t_beq_mis
-    addi a5, a5, 6
-    EXPECT a4, a5
+    .half 0x0001                    # (skipped)
+    .half 0x0585                    # c.addi a1, 1   (at .+6)
+    EXPECTI a1, 6
+
+    # c.jalr / c.jr link and land on halfwords
+    la   t1, half_b
+t_cjalr:
+    .half 0x9302                    # c.jalr t1: ra = t_cjalr + 2
+    .half 0x0001                    # (not reached)
+half_b:
+    la   a5, t_cjalr + 2
+    EXPECT ra, a5
+    EXPECT s11, a6                  # none of this trapped
+
+    # A trap on a 16-bit instruction: mepc is its (halfword) address
+t_cebreak:
+    .half 0x9002                    # c.ebreak
+    .half 0x0001                    # (skipped by the handler's mepc + 4)
+    EXPECT_TRAP 3, t_cebreak
+
+    # mepc keeps bit 1 (bit 0 is always 0)
+    li   a5, 0x1003
+    csrw mepc, a5
+    csrr a4, mepc
+    EXPECTI a4, 0x1002
 
 # -----------------------------------------------------------------------------
 # 6. Instruction access fault (fetch outside the ROM)

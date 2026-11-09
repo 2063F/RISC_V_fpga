@@ -6,7 +6,7 @@
 // architecture it needs:
 //
 //   mstatus   MIE (bit 3), MPIE (bit 7); MPP (bits 12:11) reads as 11
-//   misa      RV32IMA, read-only (writes are ignored, which WARL allows)
+//   misa      RV32IMAC, read-only (writes are ignored, which WARL allows)
 //   mie/mip   MSIE/MSIP (3), MTIE/MTIP (7), MEIE/MEIP (11). mip is read-only:
 //             its bits follow the interrupt lines and are cleared at the source
 //   mtvec     BASE[31:2] + MODE bit 0 (0 = direct, 1 = vectored)
@@ -65,14 +65,14 @@ module csr_file #(
     output wire [31:0] mepc
 );
 
-    localparam [31:0] MISA_VALUE = 32'h4000_1101;  // MXL = 32, I, M, A
+    localparam [31:0] MISA_VALUE = 32'h4000_1105;  // MXL = 32, I, M, C, A
 
     reg        mstatus_mie, mstatus_mpie;
     reg        mie_msie, mie_mtie, mie_meie;
     reg [29:0] mtvec_base;
     reg        mtvec_vectored;
     reg [31:0] mscratch;
-    reg [29:0] mepc_word;           // no C extension, so mepc[1:0] is always 0
+    reg [30:0] mepc_half;           // mepc[0] is always 0 (IALIGN = 16 with C)
     reg        mcause_irq;
     reg [3:0]  mcause_code;
     reg [31:0] mtval;
@@ -83,7 +83,7 @@ module csr_file #(
     wire [31:0] mie_value     = {20'd0, mie_meie, 3'd0, mie_mtie, 3'd0, mie_msie, 3'd0};
     wire [31:0] mip_value     = {20'd0, irq_ext,  3'd0, irq_timer, 3'd0, irq_soft, 3'd0};
 
-    assign mepc = {mepc_word, 2'b00};
+    assign mepc = {mepc_half, 1'b0};
 
     // =========================================================================
     // Legality check (ID)
@@ -183,7 +183,7 @@ module csr_file #(
             mtvec_base     <= 30'd0;
             mtvec_vectored <= 1'b0;
             mscratch       <= 32'd0;
-            mepc_word      <= 30'd0;
+            mepc_half      <= 31'd0;
             mcause_irq     <= 1'b0;
             mcause_code    <= 4'd0;
             mtval          <= 32'd0;
@@ -195,7 +195,7 @@ module csr_file #(
                 minstret <= minstret + 64'd1;
 
             if (trap) begin
-                mepc_word    <= trap_pc[31:2];
+                mepc_half    <= trap_pc[31:1];
                 mcause_irq   <= trap_irq;
                 mcause_code  <= trap_code;
                 mtval        <= trap_val;
@@ -210,7 +210,7 @@ module csr_file #(
                         mstatus_mie  <= wdata[3];
                         mstatus_mpie <= wdata[7];
                     end
-                    `CSR_MEPC:      mepc_word       <= wdata[31:2];
+                    `CSR_MEPC:      mepc_half       <= wdata[31:1];
                     `CSR_MCAUSE: begin
                         mcause_irq  <= wdata[31];
                         mcause_code <= wdata[3:0];
