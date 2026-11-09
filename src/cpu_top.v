@@ -91,6 +91,7 @@ module cpu_top #(
 
     // Each hart's side of the data bus
     wire        dbus0_req,    dbus1_req;
+    wire        dbus0_pend,   dbus1_pend;
     wire        dbus0_we,     dbus1_we;
     wire [31:0] dbus0_addr,   dbus1_addr;
     wire [31:0] dbus0_wdata,  dbus1_wdata;
@@ -122,6 +123,7 @@ module cpu_top #(
         .ibus_rdata  (ibus0_rdata),
         .ibus_valid  (ibus0_valid),
         .dbus_req    (dbus0_req),
+        .dbus_pend   (dbus0_pend),
         .dbus_we     (dbus0_we),
         .dbus_addr   (dbus0_addr),
         .dbus_wdata  (dbus0_wdata),
@@ -161,6 +163,7 @@ module cpu_top #(
                 .ibus_rdata  (rom_b_dout),
                 .ibus_valid  (rom_b_valid),
                 .dbus_req    (dbus1_req),
+                .dbus_pend   (dbus1_pend),
                 .dbus_we     (dbus1_we),
                 .dbus_addr   (dbus1_addr),
                 .dbus_wdata  (dbus1_wdata),
@@ -181,6 +184,7 @@ module cpu_top #(
             assign ibus1_addr   = 32'd0;
             assign ibus1_ce     = 1'b1;
             assign dbus1_req    = 1'b0;
+            assign dbus1_pend   = 1'b0;
             assign dbus1_we     = 1'b0;
             assign dbus1_addr   = 32'd0;
             assign dbus1_wdata  = 32'd0;
@@ -223,7 +227,14 @@ module cpu_top #(
     reg last_win1;      // the last accepted request was hart 1's
 
     // Hart 1 wins when it asks alone, or when both ask and it is its turn.
-    wire win1     = dbus1_req && (!dbus0_req || !last_win1);
+    //
+    // The choice is made on dbus_pend, not dbus_req: dbus_req waits on the
+    // hart's trap decision (interrupt logic included), and the winner drives
+    // the address and data muxes in front of every slave, so deciding on it
+    // put the interrupt logic of one hart in front of the other hart's
+    // writes. dbus_pend is registers only. If the winner then turns out to
+    // trap, its access is simply not made and the cycle goes unused.
+    wire win1     = dbus1_pend && (!dbus0_pend || !last_win1);
     wire bus_free = !rd_outstanding && gnt_ok;
 
     // The grants need not include the hart's own request: a hart only looks
@@ -234,7 +245,7 @@ module cpu_top #(
     // While a load waits for its data the mux stays on its owner.
     wire sel1 = rd_outstanding ? rd_owner1 : win1;
 
-    wire dbus_req    = (dbus0_req || dbus1_req) && bus_free;  // accepted this cycle
+    wire dbus_req    = (win1 ? dbus1_req : dbus0_req) && bus_free;  // accepted this cycle
     assign dbus_we     = sel1 ? dbus1_we     : dbus0_we;
     assign dbus_addr   = sel1 ? dbus1_addr   : dbus0_addr;
     assign dbus_wdata  = sel1 ? dbus1_wdata  : dbus0_wdata;
