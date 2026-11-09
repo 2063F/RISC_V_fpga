@@ -11,20 +11,35 @@
 // picks out the letter and number keys from those indexes.
 // Board and status are printed over UART - connect with tools/uart_monitor.ps1.
 //
-// Five AI levels, chosen from a menu before every game, including the first
-// one after reset (key N = a1..e1 on the matrix, F1..F5 on a USB keyboard):
+// Six AI levels, chosen from a menu before every game, including the first
+// one after reset (key N = a1..f1 on the matrix, F1..F6 on a USB keyboard):
 //   1 Settai - for kids at the school festival: picks from the worst third of
 //              its moves and never takes a corner unless forced.
 //   2 Easy   - plays a random legal move.
 //   3 Medium - picks from the best third of its moves (1-ply evaluation).
 //   4 Hard   - alpha-beta search, depth 2.
-//   5 Expert - alpha-beta search, depth SEARCH_DEPTH.
+//   5 Expert - alpha-beta search, depth SEARCH_DEPTH, on both harts.
+//   6 Expert, 1 hart - the same search on hart 0 alone, to compare the time.
 // Any other key keeps the current level. Level 1 is the default after reset.
+//
+// Hart 1 runs search_hart_main() and takes part in the searches of levels 4
+// and 5: the two harts share out the moves at the root (see search.c). Levels
+// 5 and 6 pick the same moves; each AI move prints how long it took.
+//
+// Build (hart 1 needs link_mp.ld; the search stack wants more than the
+// default 4 KB per hart; a depth-5 endgame search uses about 7 KB):
+//   riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib
+//     -nostartfiles -I examples -T tools/link_mp.ld
+//     -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S
+//     examples/othello_embedded/{main,othello,evaluate,search}.c -lgcc
+//     -o examples/othello_embedded/othello.elf
 // =============================================================================
 #include "othello.h"
 #include "evaluate.h"
 #include "search.h"
 #include "uart.h"
+#include "csr.h"
+#include "mp.h"
 #include <stdint.h>
 
 #define MMIO_KBD_ROW (*(volatile uint32_t *)0x80000028u)
@@ -58,21 +73,23 @@
 #define SEARCH_DEPTH 4
 
 // AI levels. depth 0 = no search, choose with find_weak_move(pick);
-// otherwise find_best_move at that depth.
-#define LEVEL_COUNT 5
+// otherwise find_best_move at that depth on `harts` harts.
+#define LEVEL_COUNT 6
 
 typedef struct {
     const char *name;
     WeakPick pick;
     int depth;
+    int harts;
 } LevelDef;
 
 static const LevelDef levels[LEVEL_COUNT] = {
-    { "1 Settai (for kids)", PICK_WORST,  0 },
-    { "2 Easy",              PICK_RANDOM, 0 },
-    { "3 Medium",            PICK_GOOD,   0 },
-    { "4 Hard",              PICK_GOOD,   2 },
-    { "5 Expert",            PICK_GOOD,   SEARCH_DEPTH },
+    { "1 Settai (for kids)", PICK_WORST,  0,            1 },
+    { "2 Easy",              PICK_RANDOM, 0,            1 },
+    { "3 Medium",            PICK_GOOD,   0,            1 },
+    { "4 Hard",              PICK_GOOD,   2,            2 },
+    { "5 Expert",            PICK_GOOD,   SEARCH_DEPTH, 2 },
+    { "6 Expert, 1 hart",    PICK_GOOD,   SEARCH_DEPTH, 1 },
 };
 
 static int level = 0; // index into levels[]; level 1 after reset
@@ -308,17 +325,17 @@ static void print_result(Bitboard black, Bitboard white)
            (int)st->draws, (int)(rate10 / 10u), (int)(rate10 % 10u));
 }
 
-// Shows the level menu and waits for a key. Keys 1-5 choose that level; any
+// Shows the level menu and waits for a key. Keys 1-6 choose that level; any
 // other key starts with the current one. Called before every game.
 static void select_level(void)
 {
-    uart_print("\nChoose the level with keys 1-5 / F1-F5:\n");
+    uart_print("\nChoose the level with keys 1-6 / F1-F6:\n");
     for (int i = 0; i < LEVEL_COUNT; i++) {
         printf("  %s\n", levels[i].name);
     }
     printf("(other keys: keep level %s)\n", levels[level].name);
 
-    // USB F1-F5 are key indexes 0-4, so both keyboards give 1-5 here.
+    // USB F1-F6 are key indexes 0-5, so both keyboards give 1-6 here.
     int from_usb;
     usb_key_flush();
     int key = wait_key_press(&from_usb);
@@ -383,8 +400,16 @@ static int read_move(Bitboard moves)
     }
 }
 
+// Hart 1: helps hart 0 with every search (search.c).
+void hart_main(unsigned int hartid)
+{
+    (void)hartid;
+    search_hart_main();
+}
+
 int main(void)
 {
+    hart_start(1);
     stats_init();
     uart_print("Othello AI (8x8 matrix keyboard edition)\n");
     uart_print("You are Red. Press a key (1-64) or type a square like d3 to place a stone.\n");
@@ -430,9 +455,11 @@ int main(void)
             } else {
                 uart_print("AI (Green) is thinking...\n");
                 const LevelDef *lv = &levels[level];
+                uint32_t t0 = (uint32_t)timer_now();     // microseconds
                 SearchResult res = (lv->depth == 0)
                     ? find_weak_move(black, white, current_is_black, lv->pick, rng_next())
-                    : find_best_move(black, white, current_is_black, lv->depth);
+                    : find_best_move(black, white, current_is_black, lv->depth, lv->harts);
+                uint32_t ms = ((uint32_t)timer_now() - t0) / 1000u;
                 if (res.square >= 0) {
                     Bitboard newP, newO;
                     apply_move(P, O, res.square, &newP, &newO);
@@ -440,7 +467,9 @@ int main(void)
                     white = current_is_black ? newO : newP;
                     char buf[3];
                     square_to_str(res.square, buf);
-                    printf("AI played %s (nodes=%d)\n", buf, (int)res.nodes);
+                    printf("AI played %s (nodes=%d, %d.%d%d%d s)\n", buf, (int)res.nodes,
+                           (int)(ms / 1000u), (int)(ms / 100u % 10u), (int)(ms / 10u % 10u),
+                           (int)(ms % 10u));
                 }
             }
 

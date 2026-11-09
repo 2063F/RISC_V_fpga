@@ -243,6 +243,23 @@ int main(void) {                        // hart 0
 ハート間のピンポン 1000 往復、共有カウンタの同時更新 (AMOADD / LR・SC / AMOSWAP の
 スピンロック)、コア間割り込みを自己検査し、`sim/tb_multicore.v` で確認しています。
 
+### オセロ AI の並列探索
+
+`examples/othello_embedded` のオセロ AI は、レベル 4 (Hard) と 5 (Expert) の探索を
+2 つのハートで分担します (`search.c`)。
+
+- 方式は YBW (Young Brothers Wait)。hart 0 がルートから最初の手 (PV) をたどり、
+  各 PV ノードで最初の手を読み終えたら、残りの手を hart 1 と 1 手ずつ取り合います
+  (取り合いは AMOADD、最善値の更新は AMOSWAP のスピンロック)
+- 選ぶ手と評価値は 1 ハートのときと同じです。違うのはノード数と時間だけ
+- レベル 6 (Expert, 1 hart) は同じ探索を hart 0 だけで行います。AI の手ごとに
+  探索時間を表示するので、5 と 6 で速さを比べられます
+
+| 確認 | 内容 |
+|:--|:--|
+| `search_check.c` (PC 上) | ランダム対局 30 局 (1800 局面) で、深さ 2・4・5 のどれでも 1 ハートと 2 ハートの手と評価値が全局面で一致。2 スレッドで約 1.6〜1.7 倍 |
+| `search_bench.c` (`sim/tb_othello_mp.v`) | CPU 上で 1 ハートと 2 ハートの手が一致することと、サイクル数の比を確認 |
+
 ### アトミック命令 (A 拡張)
 
 LR.W / SC.W / AMO*.W はハートからは「操作つきのロード」として 1 回だけバスに出し、
@@ -294,6 +311,7 @@ RISC_V_fpga/
 │   ├── csr.h                 # CSR アクセス・トラップ定数・タイマ操作
 │   ├── mp.h                  # 2 つ目のハートの起動・停止
 │   ├── multicore_demo.c      # 2 ハートのデモ
+│   ├── othello_embedded/     # オセロ AI (8x8 キー・USB キーボード・UART。探索は 2 ハート)
 │   ├── loop55.c / loop55.S   # 1+2+...+10 = 55 を LED で確認
 │   ├── button_led.c          # ボタンで LED を切り替え
 │   ├── uart_echo_c.c         # UART エコー
@@ -313,7 +331,7 @@ RISC_V_fpga/
 │   └── timing.sdc            # タイミング制約
 ├── gowin_project/            # Gowin EDA プロジェクト
 ├── build.tcl                 # 合成・配置配線スクリプト (gw_sh 用)
-├── othello_ai_c/             # オセロAI (PC向けC実装。CPUとは未統合)
+├── othello_ai_c/             # オセロAI (PC向けC実装。CPU 版は examples/othello_embedded)
 └── README.md
 ```
 
@@ -528,6 +546,16 @@ riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartf
   tools/crt0.S examples/multicore_demo.c -o examples/multicore_demo.elf
 riscv64-unknown-elf-objcopy -O binary examples/multicore_demo.elf examples/multicore_demo.bin
 python tools/bin2hex.py examples/multicore_demo.bin > examples/multicore_demo.hex
+
+# othello (2 ハートで探索。探索の再帰が深いので各ハートのスタックを 10 KB に。double の演算に -lgcc)
+riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
+  -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S \
+  examples/othello_embedded/main.c examples/othello_embedded/othello.c \
+  examples/othello_embedded/evaluate.c examples/othello_embedded/search.c -lgcc \
+  -o examples/othello_embedded/othello.elf
+riscv64-unknown-elf-objcopy -O binary examples/othello_embedded/othello.elf examples/othello_embedded/othello.bin
+python tools/bin2hex.py examples/othello_embedded/othello.bin > examples/othello_embedded/othello.hex
+# search_bench (sim/tb_othello_mp.v 用) は main.c を search_bench.c に替えて同様に
 ```
 
 > `crt0.S` が `.data` の ROM→RAM コピーと `.bss` のゼロクリアを行うので、

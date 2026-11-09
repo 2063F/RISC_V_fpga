@@ -21,7 +21,15 @@ typedef struct {
  *               読み切る（終盤の完全読みを兼ねる）。
  */
 SearchResult find_best_move(Bitboard black, Bitboard white, int player_is_black,
-                             int search_depth);
+                             int search_depth, int harts);
+
+/*
+ * harts = 2 なら、ハート 1 と手分けして読む (ルートの手を 2 つのハートで
+ * 取り合う)。そのためにはハート 1 が search_hart_main() を実行中であること。
+ * 実行中でなければ (または harts = 1 なら) ハート 0 だけで読む。どちらでも
+ * 選ぶ手と評価値は同じで、ノード数だけが変わる。
+ */
+void search_hart_main(void);
 
 /* find_weak_move の手の選び方 */
 typedef enum {
