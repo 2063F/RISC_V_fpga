@@ -126,7 +126,7 @@ EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO へ�
 | 0 | 命令アドレス非整列 (分岐・ジャンプ先が 4 の倍数でない) | 飛び先アドレス |
 | 1 | 命令アクセスフォールト (命令ROM 0x0000_0000-0x0000_7FFF の外をフェッチ) | PC |
 | 2 | 不正命令 | 命令そのもの |
-| 3 | EBREAK | 0 |
+| 3 | EBREAK | EBREAK の PC |
 | 4 / 6 | ロード / ストアのアドレス非整列 | アクセスアドレス |
 | 11 | ECALL | 0 |
 
@@ -287,7 +287,8 @@ RISC_V_fpga/
 │   └── uart_*.s / uart_*.hex # 手書きアセンブリのテストプログラム
 ├── sim/                      # テストベンチ (23本, tb_*.v)
 │   ├── trap_test.S / .hex    # tb_trap.v 用の CSR・例外・割り込み自己検査プログラム
-│   └── amo_test.S / .hex     # tb_amo.v 用のアトミック命令自己検査プログラム
+│   ├── amo_test.S / .hex     # tb_amo.v 用のアトミック命令自己検査プログラム
+│   └── arch_test/            # 公式テスト riscv-arch-test の実行環境 (下記)
 ├── examples/                 # C / アセンブリのサンプルとビルド済み hex
 │   ├── uart.h                # UART MMIO ヘルパ
 │   ├── csr.h                 # CSR アクセス・トラップ定数・タイマ操作
@@ -363,6 +364,33 @@ done
 
 C プログラムをビルドして CPU で動かす手順は
 「RISC-V ツールチェーン導入手順」の「5. ビルドして使う」を参照してください。
+
+### 公式テスト (riscv-arch-test)
+
+RISC-V International の適合性テスト
+[riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) の
+rv32i_m/I・M・privilege を Icarus で流せます。期待値ファイルが同梱されている
+最後の版 2.7.4 を使います (それ以降は Sail モデルで期待値を生成する方式)。
+必要なのは riscv64-unknown-elf-gcc、iverilog、Python 3 です。
+
+```bash
+git clone --depth 1 --branch 2.7.4 https://github.com/riscv-non-isa/riscv-arch-test.git ../riscv-arch-test
+python3 sim/arch_test/run_arch_test.py ../riscv-arch-test          # 全 62 本
+python3 sim/arch_test/run_arch_test.py ../riscv-arch-test add-01   # 一部だけ
+```
+
+各テストを 1 ハートの `cpu_top` (`sim/arch_test/tb_arch_test.v`) で動かし、
+データRAM に残ったシグネチャを期待値と 1 ワードずつ比べます。現状は 62 本すべて PASS です。
+実行環境の決め事は次のとおりです。
+
+- 分岐命令のテストと jal-01 は 200 KB を超えて ROM (32 KB) に入らないので、
+  テストケースを ROM に入る塊に分けて順に実行し、塊ごとに期待値と比べます。
+  jal-01 の 3 ケースは単独でも数百 KB 先へ跳ぶため実行できず、結果にその数を出します。
+- privilege の不整列分岐・ジャンプ 8 本は、同梱の期待値が C 拡張ありの前提
+  (2 バイト境界への分岐が正当) なので、C なしの期待値
+  (`sim/arch_test/references/`、命令アドレス不整列例外の mcause・mepc・mtval を手で確認済み) を使います。
+- Zifencei は対象外です (命令を書き換えて実行するテストで、命令は ROM からしか取れないため)。
+- A 拡張のテストは 2.7.4 にないので、`sim/tb_amo.v` と `examples/multicore_demo.c` で確認しています。
 
 ### 波形表示
 
