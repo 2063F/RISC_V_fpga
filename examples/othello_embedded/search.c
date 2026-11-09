@@ -5,25 +5,24 @@
 /*
  * 2 ハートでの並列探索 (YBW: Young Brothers Wait)
  * -----------------------------------------------
- * 探索を始めるのはハート 0。ハート 1 は手が空いていて、手伝える分割点が
- * あればそこへ入る。
+ * 探索はハート 0 が進め、ハート 1 は手伝うだけ。ハート 0 は PV ノード
+ * (ルートと、そこから最初の手をたどったノード。窓が null window でないもの)
+ * で、最初の手を自分だけで読み終えたら、残りの手を「分割点」(job) として
+ * 公開する。以後はその手を 2 つのハートが job.next から 1 手ずつ取り合い、
+ * その時点の α で null window 探索し、α を超えたら全幅で読み直す
+ * (逐次版の PVS と同じ)。最善値と最善手は spinlock で守る。β カットが
+ * 起きたら残りの手は配らない。
  *
- * 分割点: 深さ SPLIT_MIN_DEPTH 以上のノードで、最初の手を自分で読み終え
- * (β カットが起きなかったら)、そのとき相手のハートが手すきなら、残りの手を
- * 分割点 (SplitPoint) として公開する。以後はその手を、作ったハート (owner)
- * と手伝うハートが next から 1 手ずつ取り合い、その時点の α で null window
- * 探索し、α を超えたら全幅で読み直す (逐次版の PVS と同じ)。最善値と
- * 最善手は分割点の spinlock で守る。β カットが起きたら残りの手は配らない。
- *
- * owner は配る手がなくなったら、手伝いが抜けるのを待つ。その間に手伝いの
- * ハートが自分の探索の中で分割点を公開したら、owner はそちらを手伝う
- * (helpful master)。こうして、先に手が空いたハートも遊ばずに済む。
- * 分割点はこのように入れ子になるだけなので、スタックで管理できる。
+ * 分割点は同時に 1 つだけ。最初の手を読んでいる間 (その下で分割点が
+ * 作られる) はハート 1 は前の分割点を終えて待っているので、ルートから
+ * PV を下った各ノードで順に手伝える。
  *
  * ルートの同点の手は並び順で前のものを選ぶ (逐次版と同じ規則)。そのため、
  * ルートで最善手より前の手は α - EPS を下限にして読み、最善値と同点でも
  * 値が確定するようにする。選ぶ手と評価値は逐次版と一致し、違うのは
  * ノード数 (キラー表がハートごとで、α の伝わり方も変わる) だけ。
+ *
+ * ハート 1 は search_hart_main() で job.gen の変化を待つ。
  */
 
 #define MAX_KILLER_DEPTH 64
@@ -37,13 +36,11 @@
 typedef struct {
     int killer[MAX_KILLER_DEPTH][2];
     long nodes;
-    int hart;
 } SearchCtx;
 
 static SearchCtx ctx[SEARCH_HARTS];
 
-static void reset_ctx(SearchCtx *c, int hart) {
-    c->hart = hart;
+static void reset_ctx(SearchCtx *c) {
     c->nodes = 0;
     for (int d = 0; d < MAX_KILLER_DEPTH; d++) { c->killer[d][0] = -1; c->killer[d][1] = -1; }
 }
@@ -103,63 +100,18 @@ static void play(Bitboard black, Bitboard white, int player_is_black, int sq,
     }
 }
 
-/* 分割点。入れ子になるだけなのでスタックに積む */
-typedef struct {
-    Bitboard black, white;
-    int player_is_black;
-    int depth;
-    double alpha0, beta;    /* ノードに来たときの窓 */
-    int root;               /* ルートなら 1 (同点の扱い) */
-    int n;
-    const int *sqs;         /* 並べた手 (owner のスタック上。RAM は共有) */
-    unsigned lock;          /* 以下を守る */
-    int next;               /* 次に配る手の番号 */
-    double best_val;
-    int best_idx;
-    int helpers;            /* 入っている手伝いの数 */
-} SplitPoint;
+static double split(Bitboard black, Bitboard white, int player_is_black, int depth,
+                    double alpha, double beta, const int *sqs, int n,
+                    double first_val, int root, int *out_move);
 
-#define MAX_SPLITS 32
-
-static SplitPoint splits[MAX_SPLITS];
-static int split_count;             /* 使用中の分割点の数 */
-static SplitPoint *offer;           /* 手伝いを募集中の分割点。なければ NULL */
-static int idle[SEARCH_HARTS];      /* そのハートが手すきなら 1 */
-static int hart1_ready;             /* search_hart_main が動いていれば 1 */
-static unsigned search_id;          /* find_best_move ごとに増える (キラー表のリセット用) */
-
-/*
- * 待ちループで共有変数を読み続けると、データバス (2 ハートで 1 本) を
- * 取り合って、相手のハートの探索を遅くする。読み直す前に、バスを使わない
- * nop を SPIN_PAUSE 回はさむ (命令はハートごとの ROM ポートから取る)。
- */
-#ifndef SPIN_PAUSE
-#define SPIN_PAUSE 64
-#endif
-
-static void spin_pause(void) {
-    for (int i = 0; i < SPIN_PAUSE; i++)
-        __asm__ volatile ("nop");
-}
-
-static void sp_lock(SplitPoint *sp) {
-    while (__atomic_exchange_n(&sp->lock, 1u, __ATOMIC_ACQUIRE))
-        spin_pause();
-}
-
-static void sp_unlock(SplitPoint *sp) {
-    __atomic_store_n(&sp->lock, 0u, __ATOMIC_RELEASE);
-}
-
-static double split(SearchCtx *c, Bitboard black, Bitboard white, int player_is_black,
-                    int depth, double alpha, double beta, const int *sqs, int n,
-                    int first, double best_val, int best_idx, int root, int *out_move);
+static int job_active;      /* ハート 0 だけが読み書きする */
+static int hart1_ready;     /* search_hart_main が動いていれば 1 */
 
 /*
  * negamax + αβ枝刈り + PVS(NegaScout)。
  * オリジナル版にあった置換表(hash)は使わない: 評価値によるムーブオーダリングと
  * キラームーブだけでも実用的な枝刈りが得られ、RAMもほぼ使わない。
- * can_split なら、相手のハートが手すきのとき残りの手を分割点にする。
+ * c == &ctx[0] (ハート 0) で can_split なら、PV ノードでハート 1 と手分けする。
  */
 static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_is_black,
                       int depth, double alpha, double beta, int can_split, int root,
@@ -197,30 +149,25 @@ static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_i
     int best_move = sqs[0];
 
     for (int i = 0; i < n; i++) {
-        /* 2 手目以降: 相手が手すきなら残りを分割点にする */
-        if (i > 0 && can_split && depth >= SPLIT_MIN_DEPTH && i < n - 1 &&
-            __atomic_load_n(&idle[!c->hart], __ATOMIC_ACQUIRE) &&
-            __atomic_load_n(&offer, __ATOMIC_ACQUIRE) == 0 &&
-            __atomic_load_n(&split_count, __ATOMIC_ACQUIRE) < MAX_SPLITS) {
-            int best_idx = 0;
-            while (sqs[best_idx] != best_move) best_idx++;
-            return split(c, black, white, player_is_black, depth, alpha, beta, sqs, n,
-                         i, best_val, best_idx, root, out_move);
-        }
-
         Bitboard newblack, newwhite;
         play(black, white, player_is_black, sqs[i], &newblack, &newwhite);
         double v;
 
         if (i == 0) {
+            /* 最初の手は PV。その先でも手分けできる */
             v = -negamax(c, newblack, newwhite, !player_is_black, depth - 1, -beta, -alpha,
                          can_split, 0, 0);
+            if (can_split && n > 1 && depth >= SPLIT_MIN_DEPTH && v < beta && !job_active &&
+                __atomic_load_n(&hart1_ready, __ATOMIC_ACQUIRE)) {
+                return split(black, white, player_is_black, depth, alpha, beta, sqs, n,
+                             v, root, out_move);
+            }
         } else {
             v = -negamax(c, newblack, newwhite, !player_is_black, depth - 1, -(alpha + EPS),
-                         -alpha, can_split, 0, 0);
+                         -alpha, 0, 0, 0);
             if (v > alpha && v < beta) {
                 v = -negamax(c, newblack, newwhite, !player_is_black, depth - 1, -beta, -alpha,
-                             can_split, 0, 0);
+                             0, 0, 0);
             }
         }
 
@@ -236,137 +183,138 @@ static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_i
     return best_val;
 }
 
-/* 分割点 sp から手を取っては読む。配る手がなくなったら戻る */
-static void split_worker(SearchCtx *c, SplitPoint *sp) {
-    for (;;) {
-        sp_lock(sp);
-        int i = sp->next;
-        double alpha = sp->best_val > sp->alpha0 ? sp->best_val : sp->alpha0;
-        int best_idx = sp->best_idx;
-        if (i < sp->n && alpha < sp->beta)
-            sp->next = i + 1;
-        else
-            i = sp->n;
-        sp_unlock(sp);
-        if (i >= sp->n) break;
+/* 分割点の共有状態 */
+static struct {
+    Bitboard black, white;
+    int player_is_black;
+    int depth;
+    double alpha0, beta;    /* ノードに来たときの窓 */
+    int root;               /* ルートなら 1 (同点の扱い) */
+    int n;
+    const int *sqs;         /* 並べた手 (ハート 0 のスタック上。RAM は共有) */
+    int next;               /* 次に読む手の番号 (AMO で取り合う) */
+    unsigned lock;          /* best_val / best_idx を守る */
+    double best_val;
+    int best_idx;
+    int busy;               /* 作業中のハート 1 の数 */
+    unsigned gen;           /* 新しい分割点ごとに増える。ハート 1 はこれを待つ */
+    unsigned search_id;     /* find_best_move ごとに増える (キラー表のリセット用) */
+} job;
 
+/*
+ * 待ちループで共有変数を読み続けると、データバス (2 ハートで 1 本) を
+ * 取り合って、相手のハートの探索を遅くする。読み直す前に、バスを使わない
+ * nop を SPIN_PAUSE 回はさむ (命令はハートごとの ROM ポートから取る)。
+ */
+#ifndef SPIN_PAUSE
+#define SPIN_PAUSE 64
+#endif
+
+static void spin_pause(void) {
+    for (int i = 0; i < SPIN_PAUSE; i++)
+        __asm__ volatile ("nop");
+}
+
+static void job_lock(void) {
+    while (__atomic_exchange_n(&job.lock, 1u, __ATOMIC_ACQUIRE))
+        spin_pause();
+}
+
+static void job_unlock(void) {
+    __atomic_store_n(&job.lock, 0u, __ATOMIC_RELEASE);
+}
+
+/* job.next から手を取っては読む。0 番目の手は読み終えている */
+static void split_worker(SearchCtx *c) {
+    for (;;) {
+        int i = __atomic_fetch_add(&job.next, 1, __ATOMIC_RELAXED);
+        if (i >= job.n) break;
+
+        job_lock();
+        double alpha = job.best_val > job.alpha0 ? job.best_val : job.alpha0;
+        int best_idx = job.best_idx;
+        job_unlock();
+        if (alpha >= job.beta) break;   /* β カット済み */
         /* ルートで最善手より前の手は、同点でも値が確定するよう窓を EPS だけ下げる */
-        if (sp->root && i < best_idx) alpha -= EPS;
+        if (job.root && i < best_idx) alpha -= EPS;
 
         Bitboard newblack, newwhite;
-        play(sp->black, sp->white, sp->player_is_black, sp->sqs[i], &newblack, &newwhite);
-        double v = -negamax(c, newblack, newwhite, !sp->player_is_black, sp->depth - 1,
-                            -(alpha + EPS), -alpha, 1, 0, 0);
-        if (v > alpha && v < sp->beta) {
-            v = -negamax(c, newblack, newwhite, !sp->player_is_black, sp->depth - 1,
-                         -sp->beta, -alpha, 1, 0, 0);
+        play(job.black, job.white, job.player_is_black, job.sqs[i], &newblack, &newwhite);
+        double v = -negamax(c, newblack, newwhite, !job.player_is_black, job.depth - 1,
+                            -(alpha + EPS), -alpha, 0, 0, 0);
+        if (v > alpha && v < job.beta) {
+            v = -negamax(c, newblack, newwhite, !job.player_is_black, job.depth - 1,
+                         -job.beta, -alpha, 0, 0, 0);
         }
 
         /* ルートでは α 以下の値は上限でしかないので、最善手の候補にしない */
-        if (!sp->root || v > alpha) {
-            sp_lock(sp);
-            if (v > sp->best_val || (v == sp->best_val && i < sp->best_idx)) {
-                sp->best_val = v;
-                sp->best_idx = i;
+        if (!job.root || v > alpha) {
+            job_lock();
+            if (v > job.best_val || (v == job.best_val && i < job.best_idx)) {
+                job.best_val = v;
+                job.best_idx = i;
             }
-            if (v >= sp->beta) {
-                sp->next = sp->n;       /* 残りは配らない */
-                store_killer(c, sp->depth, sp->sqs[i]);
+            if (v >= job.beta) {
+                job.next = job.n;       /* 残りは配らない */
+                store_killer(c, job.depth, job.sqs[i]);
             }
-            sp_unlock(sp);
+            job_unlock();
         }
     }
 }
 
-/* 募集中の分割点があれば入って手伝う。手伝ったら 1 */
-static int help(SearchCtx *c) {
-    SplitPoint *sp = __atomic_load_n(&offer, __ATOMIC_ACQUIRE);
-    if (!sp) return 0;
-    sp_lock(sp);
-    int joined = (__atomic_load_n(&offer, __ATOMIC_ACQUIRE) == sp) && sp->next < sp->n;
-    if (joined) sp->helpers++;
-    sp_unlock(sp);
-    if (!joined) return 0;
+/* PV ノードの 1 番目以降の手をハート 1 と手分けして読む (ハート 0 から呼ぶ) */
+static double split(Bitboard black, Bitboard white, int player_is_black, int depth,
+                    double alpha, double beta, const int *sqs, int n,
+                    double first_val, int root, int *out_move) {
+    job.black = black;
+    job.white = white;
+    job.player_is_black = player_is_black;
+    job.depth = depth;
+    job.alpha0 = alpha;
+    job.beta = beta;
+    job.root = root;
+    job.n = n;
+    job.sqs = sqs;
+    job.best_val = first_val;
+    job.best_idx = 0;
+    job.next = 1;
+    job.busy = 1;
+    job_active = 1;
+    __atomic_fetch_add(&job.gen, 1u, __ATOMIC_RELEASE);   /* ハート 1 を起こす */
 
-    __atomic_store_n(&idle[c->hart], 0, __ATOMIC_RELEASE);
-    split_worker(c, sp);
-    sp_lock(sp);
-    sp->helpers--;
-    sp_unlock(sp);
-    return 1;
-}
+    split_worker(&ctx[0]);
+    while (__atomic_load_n(&job.busy, __ATOMIC_ACQUIRE))
+        spin_pause();
+    job_active = 0;
 
-/* sqs[first] 以降の手を分割点にして、相手のハートと手分けして読む */
-static double split(SearchCtx *c, Bitboard black, Bitboard white, int player_is_black,
-                    int depth, double alpha, double beta, const int *sqs, int n,
-                    int first, double best_val, int best_idx, int root, int *out_move) {
-    SplitPoint *sp = &splits[__atomic_fetch_add(&split_count, 1, __ATOMIC_ACQ_REL)];
-    sp->black = black;
-    sp->white = white;
-    sp->player_is_black = player_is_black;
-    sp->depth = depth;
-    sp->alpha0 = alpha;
-    sp->beta = beta;
-    sp->root = root;
-    sp->n = n;
-    sp->sqs = sqs;
-    sp->lock = 0;
-    sp->next = first;
-    sp->best_val = best_val;
-    sp->best_idx = best_idx;
-    sp->helpers = 0;
-    __atomic_store_n(&offer, sp, __ATOMIC_RELEASE);     /* 手伝いを募集 */
-
-    split_worker(c, sp);
-
-    /* 配る手がなくなった。募集をやめ、手伝いが抜けるのを待つ。その間に
-       手伝いが公開した分割点 (この分割点の下にある) があれば手伝う */
-    sp_lock(sp);
-    if (__atomic_load_n(&offer, __ATOMIC_ACQUIRE) == sp)
-        __atomic_store_n(&offer, 0, __ATOMIC_RELEASE);
-    sp_unlock(sp);
-    __atomic_store_n(&idle[c->hart], 1, __ATOMIC_RELEASE);
-    for (;;) {
-        sp_lock(sp);
-        int helpers = sp->helpers;
-        sp_unlock(sp);
-        if (helpers == 0) break;
-        if (!help(c)) spin_pause();
-        __atomic_store_n(&idle[c->hart], 1, __ATOMIC_RELEASE);
-    }
-    __atomic_store_n(&idle[c->hart], 0, __ATOMIC_RELEASE);
-    __atomic_fetch_sub(&split_count, 1, __ATOMIC_ACQ_REL);
-
-    if (out_move) *out_move = sp->sqs[sp->best_idx];
-    return sp->best_val;
+    if (out_move) *out_move = job.sqs[job.best_idx];
+    return job.best_val;
 }
 
 void search_hart_main(void) {
-    unsigned search = search_id - 1u;
-    reset_ctx(&ctx[1], 1);
-    __atomic_store_n(&idle[1], 1, __ATOMIC_RELEASE);
+    unsigned seen = __atomic_load_n(&job.gen, __ATOMIC_ACQUIRE);
+    unsigned search = job.search_id - 1u;
     __atomic_store_n(&hart1_ready, 1, __ATOMIC_RELEASE);
     for (;;) {
-        SplitPoint *sp = __atomic_load_n(&offer, __ATOMIC_ACQUIRE);
-        if (!sp) {
+        unsigned g;
+        while ((g = __atomic_load_n(&job.gen, __ATOMIC_ACQUIRE)) == seen)
             spin_pause();
-            continue;
+        seen = g;
+        if (job.search_id != search) {  /* 新しい探索: キラー表を消す */
+            search = job.search_id;
+            reset_ctx(&ctx[1]);
         }
-        unsigned id = __atomic_load_n(&search_id, __ATOMIC_ACQUIRE);
-        if (id != search) {             /* 新しい探索: キラー表を消す */
-            search = id;
-            reset_ctx(&ctx[1], 1);
-        }
-        help(&ctx[1]);
-        __atomic_store_n(&idle[1], 1, __ATOMIC_RELEASE);
+        split_worker(&ctx[1]);
+        __atomic_fetch_sub(&job.busy, 1, __ATOMIC_RELEASE);
     }
 }
 
 SearchResult find_best_move(Bitboard black, Bitboard white, int player_is_black,
                              int search_depth, int harts) {
-    reset_ctx(&ctx[0], 0);
+    reset_ctx(&ctx[0]);
     ctx[1].nodes = 0;
-    __atomic_fetch_add(&search_id, 1u, __ATOMIC_RELEASE);
+    job.search_id++;
 
     int empty = 64 - popcount(black) - popcount(white);
     int depth = search_depth;
@@ -374,10 +322,9 @@ SearchResult find_best_move(Bitboard black, Bitboard white, int player_is_black,
     if (depth < 1) depth = 1;
     if (depth >= MAX_KILLER_DEPTH) depth = MAX_KILLER_DEPTH - 1;
 
-    int parallel = harts >= 2 && __atomic_load_n(&hart1_ready, __ATOMIC_ACQUIRE);
     int move = -1;
     double val = negamax(&ctx[0], black, white, player_is_black, depth, -INF, INF,
-                         parallel, 1, &move);
+                         harts >= 2, 1, &move);
 
     SearchResult result;
     result.square = move;
