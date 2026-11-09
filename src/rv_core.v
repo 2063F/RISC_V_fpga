@@ -259,6 +259,7 @@ module rv_core #(
             trap_val  = ex_inst;
         end else if (ex_ebreak) begin
             trap_code = `EXC_BREAKPOINT;
+            trap_val  = ex_pc;          // optional (0 is also legal); riscv-arch-test expects the PC
         end else if (ex_ecall) begin
             trap_code = `EXC_ECALL_M;
         end else if (exc_jump_mis || exc_branch_mis) begin
