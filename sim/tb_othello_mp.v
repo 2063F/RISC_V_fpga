@@ -37,6 +37,24 @@ module tb_othello_mp;
         .debug_x1       ()
     );
 
+    // Bus statistics: cycles each hart has a request waiting for the bus
+    // (the other hart holds it), and cycles it gets the bus.
+    integer cycles = 0, wait0 = 0, wait1 = 0, gnt0 = 0, gnt1 = 0;
+    always @(posedge clk) if (rst_n) begin
+        cycles = cycles + 1;
+        if (uut.dbus0_req && !uut.dbus0_gnt) wait0 = wait0 + 1;
+        if (uut.dbus1_req && !uut.dbus1_gnt) wait1 = wait1 + 1;
+        if (uut.dbus0_req &&  uut.dbus0_gnt) gnt0 = gnt0 + 1;
+        if (uut.dbus1_req &&  uut.dbus1_gnt) gnt1 = gnt1 + 1;
+    end
+
+    task show_bus;
+        begin
+            $display("bus: %0d cycles; hart 0 %0d accesses, %0d cycles waiting; hart 1 %0d accesses, %0d cycles waiting",
+                     cycles, gnt0, wait0, gnt1, wait1);
+        end
+    endtask
+
     reg [8*16-1:0] tail = 0;
     reg [7:0]      data;
     integer        i;
@@ -59,6 +77,7 @@ module tb_othello_mp;
             $write("%c", data);
             $fflush;
             tail = {tail[8*15-1:0], data};
+            if (data == 8'h0A) show_bus;
             if (tail[8*6-1:0] == "ALL OK") begin
                 #(BIT_NS * 20);
                 $display("\nALL TESTS PASSED!");
