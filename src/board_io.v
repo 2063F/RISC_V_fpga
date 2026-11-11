@@ -27,7 +27,7 @@
 //                   7 = h1, 8 = a2, ... 63 = h8). Reading does not consume
 //                   the event.
 //                 - write (any value): consume the event. The pop reaches
-//                   usb_keyboard one clock after the store, so a read in
+//                   usb_keyboard two clocks after the store, so a read in
 //                   that clock reports no event (bit 8 = 0) rather than the
 //                   one being consumed; the next read sees the next event.
 //
@@ -35,6 +35,12 @@
 // samples external load data in the load's second (data) cycle with the
 // address held steady, so this costs nothing and keeps the address decode
 // off the CPU's write-back path.
+//
+// Writes are registered on the way in and decoded a clock later, so that
+// the CPU's address adder is not in front of every register's enable (it
+// was the critical path). A store therefore takes effect one clock late;
+// cpu_top accepts no access in the clock after a store to anything but its
+// RAM, so a load can never get there first.
 // =============================================================================
 
 module board_io (
@@ -67,15 +73,28 @@ module board_io (
     localparam [31:0] LED_RED_HI_ADDR   = 32'h8000_003C;
     localparam [31:0] USBKEY_ADDR       = 32'h8000_0040;
 
-    // Stores never stall in the CPU, so write_en is a single-cycle pulse.
-    // The pop is registered: combinational, it ran from the CPU's address
-    // adder straight into usb_keyboard's 64-bit pending update and was the
-    // critical path.
+    // The store, a clock late (see the top of this file). Stores never stall
+    // in the CPU, so write_en is a single-cycle pulse.
+    reg        wr_q;
+    reg [31:0] waddr_q;
+    reg [31:0] wdata_q;
+
+    always @(posedge clk) begin
+        if (!rst_n)
+            wr_q <= 1'b0;
+        else
+            wr_q <= write_en;
+        waddr_q <= addr;
+        wdata_q <= write_data;
+    end
+
+    // The pop is registered as well: combinational, it ran into
+    // usb_keyboard's 64-bit pending update.
     always @(posedge clk) begin
         if (!rst_n)
             usbkey_pop <= 1'b0;
         else
-            usbkey_pop <= write_en && (addr == USBKEY_ADDR);
+            usbkey_pop <= wr_q && (waddr_q == USBKEY_ADDR);
     end
 
     always @(posedge clk) begin
@@ -85,23 +104,23 @@ module board_io (
             led_green_bitmap <= 64'd0;
             led_red_bitmap   <= 64'd0;
         end else begin
-            if (write_en && addr == LED_ADDR) begin
-                led_ctrl <= write_data[0];
+            if (wr_q && waddr_q == LED_ADDR) begin
+                led_ctrl <= wdata_q[0];
             end
-            if (write_en && addr == KBD_ROW_ADDR) begin
-                kbd_row <= write_data[7:0];
+            if (wr_q && waddr_q == KBD_ROW_ADDR) begin
+                kbd_row <= wdata_q[7:0];
             end
-            if (write_en && addr == LED_GREEN_LO_ADDR) begin
-                led_green_bitmap[31:0] <= write_data;
+            if (wr_q && waddr_q == LED_GREEN_LO_ADDR) begin
+                led_green_bitmap[31:0] <= wdata_q;
             end
-            if (write_en && addr == LED_GREEN_HI_ADDR) begin
-                led_green_bitmap[63:32] <= write_data;
+            if (wr_q && waddr_q == LED_GREEN_HI_ADDR) begin
+                led_green_bitmap[63:32] <= wdata_q;
             end
-            if (write_en && addr == LED_RED_LO_ADDR) begin
-                led_red_bitmap[31:0] <= write_data;
+            if (wr_q && waddr_q == LED_RED_LO_ADDR) begin
+                led_red_bitmap[31:0] <= wdata_q;
             end
-            if (write_en && addr == LED_RED_HI_ADDR) begin
-                led_red_bitmap[63:32] <= write_data;
+            if (wr_q && waddr_q == LED_RED_HI_ADDR) begin
+                led_red_bitmap[63:32] <= wdata_q;
             end
         end
     end

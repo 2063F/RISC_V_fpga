@@ -234,8 +234,14 @@ module cpu_top #(
     // put the interrupt logic of one hart in front of the other hart's
     // writes. dbus_pend is registers only. If the winner then turns out to
     // trap, its access is simply not made and the cycle goes unused.
+    // A store to anything but the RAM may take effect a clock late (board_io
+    // registers its writes, see there), so nothing is accepted in the clock
+    // after one: a load cannot overtake it. These stores are rare (device
+    // registers), so the lost cycle does not matter.
+    reg  posted_wr;
+
     wire win1     = dbus1_pend && (!dbus0_pend || !last_win1);
-    wire bus_free = !rd_outstanding && gnt_ok;
+    wire bus_free = !rd_outstanding && !posted_wr && gnt_ok;
 
     // The grants need not include the hart's own request: a hart only looks
     // at its grant while it is asking.
@@ -262,6 +268,7 @@ module cpu_top #(
             rd_owner1      <= 1'b0;
             last_win1      <= 1'b0;
         end else begin
+
             if (bus_rd)           rd_outstanding <= 1'b1;
             else if (dbus_rvalid) rd_outstanding <= 1'b0;
 
@@ -401,6 +408,12 @@ module cpu_top #(
     // claims the whole 64 KB window, so 0x0001_8000 - 0x0001_FFFF aliases it.
     wire imem_sel = (dbus_addr < 32'h0000_8000);
     wire dmem_sel = (dbus_addr >= 32'h0001_0000) && (dbus_addr <= 32'h0001_FFFF);
+
+    // See posted_wr at the arbiter
+    always @(posedge clk) begin
+        if (!rst_n) posted_wr <= 1'b0;
+        else        posted_wr <= wr_en && !dmem_sel;
+    end
     // MMIO: 0x8000_0010 = UART TX data register
     //       0x8000_0014 = UART TX status register (bit0 = busy)
     //       0x8000_0018 = UART RX data register
