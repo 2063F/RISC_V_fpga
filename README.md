@@ -572,8 +572,8 @@ riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartf
 riscv64-unknown-elf-objcopy -O binary examples/multicore_demo.elf examples/multicore_demo.bin
 python tools/bin2hex.py examples/multicore_demo.bin > examples/multicore_demo.hex
 
-# othello (2 ハートで探索。探索の再帰が深いので各ハートのスタックを 10 KB に。double の演算に -lgcc)
-riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
+# othello (2 ハートで探索。圧縮命令で ROM を節約。探索の再帰が深いので各ハートのスタックを 10 KB に。double の演算に -lgcc)
+riscv64-unknown-elf-gcc -march=rv32imac_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
   -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S \
   examples/othello_embedded/main.c examples/othello_embedded/othello.c \
   examples/othello_embedded/evaluate.c examples/othello_embedded/search.c -lgcc \

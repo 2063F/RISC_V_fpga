@@ -28,7 +28,7 @@
 //
 // Build (hart 1 needs link_mp.ld; the search stack wants more than the
 // default 4 KB per hart; a depth-5 endgame search uses about 7 KB):
-//   riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib
+//   riscv64-unknown-elf-gcc -march=rv32imac_zicsr -mabi=ilp32 -O2 -nostdlib
 //     -nostartfiles -I examples -T tools/link_mp.ld
 //     -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S
 //     examples/othello_embedded/{main,othello,evaluate,search}.c -lgcc
