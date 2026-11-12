@@ -67,7 +67,8 @@ void square_to_str(int sq, char *out) {
     out[2] = '\0';
 }
 
-void print_board(Bitboard black, Bitboard white, Bitboard hints) {
+void print_board(Bitboard black, Bitboard white, Bitboard hints,
+                 char black_ch, char white_ch) {
     for (int r = 0; r < 8; r++) {
         printf("%d ", r + 1);
         for (int c = 0; c < 8; c++) {
@@ -79,8 +80,8 @@ void print_board(Bitboard black, Bitboard white, Bitboard hints) {
                 continue;
             }
             char ch = '.';
-            if (black & bit) ch = 'R'; // shown red on the LED matrix
-            else if (white & bit) ch = 'G'; // shown green on the LED matrix
+            if (black & bit) ch = black_ch;
+            else if (white & bit) ch = white_ch;
             uart_putchar(ch);
             uart_putchar(' ');
         }

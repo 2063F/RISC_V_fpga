@@ -58,7 +58,9 @@ static inline int row_of(int sq) { return sq / 8; }
 void square_to_str(int sq, char *out);
 
 /* 盤面をUARTにテキスト表示する (要 uart.h)。
+   黒石・白石はそれぞれ black_ch / white_ch の文字で示す。
    hints のマス（合法手）は全角の「〇」で示す。不要なら 0 を渡す */
-void print_board(Bitboard black, Bitboard white, Bitboard hints);
+void print_board(Bitboard black, Bitboard white, Bitboard hints,
+                 char black_ch, char white_ch);
 
 #endif

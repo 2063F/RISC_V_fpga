@@ -1,8 +1,14 @@
 // =============================================================================
-// main.c - Othello vs AI, played through the 8x8 matrix keyboard, a USB
-// keyboard on the Dock's USB-A port, and UART
+// main.c - Othello against the AI or between two people, played through the
+// 8x8 matrix keyboard, a USB keyboard on the Dock's USB-A port, and UART
 // =============================================================================
-// You always play Black; the engine (search.c) always plays White.
+// A menu before every game (see setup_game) chooses the game: against the AI
+// at one of six levels, or two people taking turns on the same keyboards;
+// against the AI, whether you move first (Black) or second (White); and
+// whether the sides are called Red / Green or Black / White. Black always
+// moves first. The names only change the UART output; the LED matrix shows
+// the two sides in its two colors as before.
+//
 // Press a matrix keyboard key 1-64 to place a stone: key N corresponds to
 // square N-1 (row-major, same numbering as keyboard_scan.c: sq = row*8 + col).
 // A USB keyboard works at the same time: type the square as a letter a-h and
@@ -11,8 +17,7 @@
 // picks out the letter and number keys from those indexes.
 // Board and status are printed over UART - connect with tools/uart_monitor.ps1.
 //
-// Six AI levels, chosen from a menu before every game, including the first
-// one after reset (key N = a1..f1 on the matrix, F1..F6 on a USB keyboard):
+// The six AI levels (menu keys 1-6):
 //   1 Settai - for kids at the school festival: picks from the worst third of
 //              its moves and never takes a corner unless forced.
 //   2 Easy   - plays a random legal move.
@@ -20,7 +25,7 @@
 //   4 Hard   - alpha-beta search, depth 2.
 //   5 Expert - alpha-beta search, depth SEARCH_DEPTH, on both harts.
 //   6 Expert, 1 hart - the same search on hart 0 alone, to compare the time.
-// Any other key keeps the current level. Level 1 is the default after reset.
+// After reset: level 1, you move first, Red / Green.
 //
 // Hart 1 runs search_hart_main() and takes part in the searches of levels 4
 // and 5: the two harts share out the moves at the root (see search.c). Levels
@@ -92,7 +97,26 @@ static const LevelDef levels[LEVEL_COUNT] = {
     { "6 Expert, 1 hart",    PICK_GOOD,   SEARCH_DEPTH, 1 },
 };
 
-static int level = 0; // index into levels[]; level 1 after reset
+// The game set up by the menu (setup_game). Plain statics: back to the
+// defaults after a reset.
+static int level = 0;         // index into levels[]; level 1 after reset
+static int two_players = 0;   // 1: two people, no AI
+static int human_black = 1;   // against the AI: 1 = you move first (Black)
+static int black_white = 0;   // 0: sides called Red / Green, 1: Black / White
+
+static const char *side_name(int is_black)
+{
+    if (black_white)
+        return is_black ? "Black" : "White";
+    return is_black ? "Red" : "Green";
+}
+
+static char side_char(int is_black)
+{
+    if (black_white)
+        return is_black ? 'B' : 'W';
+    return is_black ? 'R' : 'G';
+}
 
 // Random numbers for levels 1-3. There is no timer, so entropy comes from
 // how long the player takes to press each key (see wait_key_press). The state
@@ -256,7 +280,8 @@ static void update_led_matrix(Bitboard black, Bitboard white)
     MMIO_LED_RED_HI   = (uint32_t)(white >> 32);
 }
 
-// Running totals of finished games per level (you = Red/black). Kept in .noinit, which
+// Running totals of your games against the AI, per level, moving first and
+// second together (two-player games are not counted). Kept in .noinit, which
 // crt0.S doesn't clear, so the totals survive a reset (S1 or holding Space)
 // as long as the board stays powered. At power-up the RAM holds zeros or
 // leftovers, so the magic word and check value decide whether it is valid.
@@ -299,22 +324,33 @@ static void stats_init(void)
     }
 }
 
+static void print_score(Bitboard black, Bitboard white)
+{
+    printf("%s: %d  %s: %d\n", side_name(1), popcount(black), side_name(0), popcount(white));
+}
+
 static void print_result(Bitboard black, Bitboard white)
 {
-    LevelStats *st = &stats.lv[level];
     int bc = popcount(black), wc = popcount(white);
     printf("\n=== Game over ===\n");
-    printf("Red: %d  Green: %d\n", bc, wc);
-    if (bc > wc) {
-        uart_print("Red wins!\n");
-        st->wins++;
-    } else if (wc > bc) {
-        uart_print("Green wins!\n");
-        st->losses++;
-    } else {
+    print_score(black, white);
+    if (bc != wc)
+        printf("%s wins!\n", side_name(bc > wc));
+    else
         uart_print("Draw.\n");
+    if (two_players)
+        return;
+
+    // Against the AI: count it from your side
+    LevelStats *st = &stats.lv[level];
+    int mine = human_black ? bc : wc;
+    int ai   = human_black ? wc : bc;
+    if (mine > ai)
+        st->wins++;
+    else if (ai > mine)
+        st->losses++;
+    else
         st->draws++;
-    }
     stats.check = stats_check();
 
     // Win rate in tenths of a percent, rounded; draws count as games, not wins.
@@ -325,24 +361,63 @@ static void print_result(Bitboard black, Bitboard white)
            (int)st->draws, (int)(rate10 / 10u), (int)(rate10 % 10u));
 }
 
-// Shows the level menu and waits for a key. Keys 1-6 choose that level; any
-// other key starts with the current one. Called before every game.
-static void select_level(void)
+// A key from wait_key_press as a menu number: matrix keys as they are (1-64),
+// on a USB keyboard F1-F12 as 1-12 and the number keys 1-9 as 1-9. Any other
+// key gives 0.
+static int menu_number(int key, int from_usb)
 {
-    uart_print("\nChoose the level with keys 1-6 / F1-F6:\n");
-    for (int i = 0; i < LEVEL_COUNT; i++) {
-        printf("  %s\n", levels[i].name);
-    }
-    printf("(other keys: keep level %s)\n", levels[level].name);
+    if (!from_usb)
+        return key;
+    int idx = key - 1;
+    if (idx < 12)
+        return idx + 1;                             // F1-F12
+    if (idx >= USBIDX_DIGIT1 && idx < USBIDX_DIGIT1 + 9)
+        return idx - USBIDX_DIGIT1 + 1;             // 1-9
+    return 0;
+}
 
-    // USB F1-F6 are key indexes 0-5, so both keyboards give 1-6 here.
-    int from_usb;
-    usb_key_flush();
-    int key = wait_key_press(&from_usb);
-    if (key >= 1 && key <= LEVEL_COUNT) {
-        level = key - 1;
+// The menu before every game. Keys 1-7 choose the game and start it, 8 and 9
+// change a setting and show the menu again, any other key starts the game
+// as shown.
+static void setup_game(void)
+{
+    for (;;) {
+        uart_print("\n=== New game ===\n");
+        for (int i = 0; i < LEVEL_COUNT; i++)
+            printf("  %d  vs AI, level %s\n", i + 1, levels[i].name);
+        uart_print("  7  Two players\n");
+        printf("  8  Against the AI you move: %s\n",
+               human_black ? "first" : "second");
+        printf("  9  Sides: %s\n", black_white ? "Black / White" : "Red / Green");
+        if (two_players)
+            uart_print("(other keys: two players)\n");
+        else
+            printf("(other keys: vs AI, level %s)\n", levels[level].name);
+        uart_print("Keys 1-9 on the matrix, F1-F9 or 1-9 on a USB keyboard.\n");
+
+        int from_usb;
+        usb_key_flush();
+        int n = menu_number(wait_key_press(&from_usb), from_usb);
+        if (n >= 1 && n <= LEVEL_COUNT) {
+            level = n - 1;
+            two_players = 0;
+        } else if (n == 7) {
+            two_players = 1;
+        } else if (n == 8) {
+            human_black = !human_black;
+            continue;
+        } else if (n == 9) {
+            black_white = !black_white;
+            continue;
+        }
+        break;
     }
-    printf("Level %s\n", levels[level].name);
+
+    if (two_players)
+        printf("Two players: %s moves first.\n", side_name(1));
+    else
+        printf("vs AI, level %s. You are %s and move %s.\n", levels[level].name,
+               side_name(human_black), human_black ? "first" : "second");
 }
 
 // Reads the player's move and returns a legal square. Matrix keyboard: one
@@ -412,10 +487,10 @@ int main(void)
     hart_start(1);
     stats_init();
     uart_print("Othello AI (8x8 matrix keyboard edition)\n");
-    uart_print("You are Red. Press a key (1-64) or type a square like d3 to place a stone.\n");
+    uart_print("Press a key (1-64) or type a square like d3 to place a stone.\n");
 
     for (;;) {
-        select_level();
+        setup_game();
         Bitboard black = INIT_BLACK;
         Bitboard white = INIT_WHITE;
         int current_is_black = 1;
@@ -432,18 +507,24 @@ int main(void)
                 if (get_moves(NP, NO) == 0) {
                     break; /* neither side can move: game over */
                 }
-                printf("%s has no legal move. Pass.\n", current_is_black ? "Green" : "Red");
+                printf("%s has no legal move. Pass.\n", side_name(!current_is_black));
                 continue;
             }
 
             // Show the player's legal moves; none while the AI is to move
-            Bitboard hints = current_is_black ? moves : 0;
-            print_board(black, white, hints);
+            int human_turn = two_players || (current_is_black == human_black);
+            Bitboard hints = human_turn ? moves : 0;
+            print_board(black, white, hints, side_char(1), side_char(0));
             update_led_matrix(black, white);
-            printf("Red: %d  Green: %d\n", popcount(black), popcount(white));
+            print_score(black, white);
 
-            if (current_is_black) {
-                uart_print("Your move (Red). Press a key (1-64) or type a square (e.g. d3).\n");
+            if (human_turn) {
+                if (two_players)
+                    printf("%s to move. Press a key (1-64) or type a square (e.g. d3).\n",
+                           side_name(current_is_black));
+                else
+                    printf("Your move (%s). Press a key (1-64) or type a square (e.g. d3).\n",
+                           side_name(current_is_black));
                 int sq = read_move(moves);
                 Bitboard newP, newO;
                 apply_move(P, O, sq, &newP, &newO);
@@ -451,9 +532,9 @@ int main(void)
                 white = current_is_black ? newO : newP;
                 char buf[3];
                 square_to_str(sq, buf);
-                printf("You played %s\n", buf);
+                printf("%s played %s\n", side_name(current_is_black), buf);
             } else {
-                uart_print("AI (Green) is thinking...\n");
+                printf("AI (%s) is thinking...\n", side_name(current_is_black));
                 const LevelDef *lv = &levels[level];
                 uint32_t t0 = (uint32_t)timer_now();     // microseconds
                 SearchResult res = (lv->depth == 0)
@@ -476,7 +557,7 @@ int main(void)
             current_is_black = !current_is_black;
         }
 
-        print_board(black, white, 0);
+        print_board(black, white, 0, side_char(1), side_char(0));
         update_led_matrix(black, white);
         print_result(black, white);
     }
