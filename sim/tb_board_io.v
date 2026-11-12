@@ -65,6 +65,8 @@ module tb_board_io;
         @(posedge clk);
         #1;
         write_en = 0;
+        @(posedge clk);   // stores take effect a clock later
+        #1;
         if (led_ctrl !== 1'b1) begin
             $display("FAIL: LED MMIO write did not set led_ctrl");
             $finish;
@@ -89,6 +91,8 @@ module tb_board_io;
         @(posedge clk);
         #1;
         write_en = 0;
+        @(posedge clk);
+        #1;
         if (kbd_row !== 8'hF7) begin
             $display("FAIL: kbd_row did not update to 0xF7, got %h", kbd_row);
             $finish;
@@ -117,6 +121,8 @@ module tb_board_io;
         @(posedge clk);
         #1;
         write_en = 0;
+        @(posedge clk);
+        #1;
         if (led_green_bitmap !== {32'h1234_5678, 32'hDEAD_BEEF}) begin
             $display("FAIL: led_green_bitmap = %h, expected 12345678DEADBEEF", led_green_bitmap);
             $finish;
@@ -133,6 +139,8 @@ module tb_board_io;
         @(posedge clk);
         #1;
         write_en = 0;
+        @(posedge clk);
+        #1;
         if (led_red_bitmap !== {32'h0000_0001, 32'hCAFE_BABE}) begin
             $display("FAIL: led_red_bitmap = %h, expected 00000001CAFEBABE", led_red_bitmap);
             $finish;
@@ -163,14 +171,20 @@ module tb_board_io;
             $finish;
         end
 
-        // Write pops the event: the pop is registered, so it pulses for
-        // exactly the clock after the store
+        // Write pops the event: the store is registered and the pop as well,
+        // so it pulses for exactly the second clock after the store
         write_en = 1;
         @(posedge clk);
         #1;
         write_en = 0;
+        if (usbkey_pop !== 1'b0) begin
+            $display("FAIL: usbkey_pop asserted the clock after the store");
+            $finish;
+        end
+        @(posedge clk);
+        #1;
         if (usbkey_pop !== 1'b1) begin
-            $display("FAIL: usbkey_pop not asserted the clock after the store");
+            $display("FAIL: usbkey_pop not asserted two clocks after the store");
             $finish;
         end
         // A read in the pop clock must not report the event being consumed

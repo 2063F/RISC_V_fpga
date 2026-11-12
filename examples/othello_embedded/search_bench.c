@@ -6,7 +6,7 @@
 // Ends with "ALL OK" or "SOME FAILED".
 //
 // Build like othello (main.c), with search_bench.c in place of main.c:
-//   riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib
+//   riscv64-unknown-elf-gcc -march=rv32imac_zicsr -mabi=ilp32 -O2 -nostdlib
 //     -nostartfiles -I examples -T tools/link_mp.ld
 //     -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S
 //     examples/othello_embedded/{search_bench,othello,evaluate,search}.c -lgcc
@@ -19,7 +19,7 @@
 #include <stdint.h>
 
 #ifndef BENCH_DEPTH
-#define BENCH_DEPTH 3
+#define BENCH_DEPTH 2       // depth 3 takes Icarus much longer
 #endif
 #ifndef BENCH_POSITIONS
 #define BENCH_POSITIONS 3

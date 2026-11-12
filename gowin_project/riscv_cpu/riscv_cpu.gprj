@@ -8,6 +8,7 @@
         <File path="../../src/fpga_top.v" type="file.verilog" enable="1"/>
         <File path="../../src/cpu_top.v" type="file.verilog" enable="1"/>
         <File path="../../src/rv_core.v" type="file.verilog" enable="1"/>
+        <File path="../../src/rvc_expand.v" type="file.verilog" enable="1"/>
         <File path="../../src/instruction_decoder.v" type="file.verilog" enable="1"/>
         <File path="../../src/alu.v" type="file.verilog" enable="1"/>
         <File path="../../src/divider.v" type="file.verilog" enable="1"/>

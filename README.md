@@ -14,6 +14,7 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 - RV32I の基本演算、即値演算、分岐、ジャンプ、ロード/ストアを実装済み
 - RV32M の乗算・除算命令を実装済み (多サイクル: 乗算3サイクル / 除算34サイクル)
 - A 拡張 (LR.W / SC.W / AMO*.W) を実装済み ([詳細](#アトミック命令-a-拡張))
+- C 拡張 (圧縮命令) を実装済み。C で書いたプログラムが 3 割ほど小さくなる ([詳細](#圧縮命令-c-拡張))
 - 2 ハート (デュアルコア) 構成。データバスを共有 ([詳細](#2-つ目のハート-hart-1))
 - Scratch RAM と UART TX/RX の MMIO を接続済み
 - 3段パイプライン化（フェッチ / デコード+レジスタ読み出し / 実行+書き戻し）
@@ -79,13 +80,14 @@ RV32IM 命令セットを段階的に実装し、シングルサイクルCPU か
 | 9 | CSR / 例外 / 割り込み | ✅ |
 | 10+ | SDRAM | 🔧 作業中 |
 | 11 | マルチコア (2ハート) + A拡張 | ✅ (実機確認済み。2ハート構成で 51.0 MHz) |
+| 12 | C拡張 (圧縮命令) | ✅ (シミュレーションで確認。実機・タイミングは未確認) |
 
 ## ISA
 
-- **ベース**: RV32I + M / A / Zicsr / Zifencei (RV32IMA_Zicsr_Zifencei)、マシンモードのみ
+- **ベース**: RV32I + M / A / C / Zicsr / Zifencei (RV32IMAC_Zicsr_Zifencei)、マシンモードのみ
 - **レジスタ**: 32本 × 32ビット (x0 = 常に0)
-- **命令長**: 固定 32ビット (C拡張の圧縮命令は未対応)
-- **実装済み命令**: 68
+- **命令長**: 32 ビットと 16 ビット (C拡張)。命令は 2 バイト境界に置ける
+- **実装済み命令**: 68 + C拡張 (RV32C のうち浮動小数点以外の全命令)
   - RV32I 40命令: LUI, AUIPC, JAL, JALR, 分岐6, ロード5, ストア3,
     即値演算9, レジスタ間演算10, FENCE, ECALL, EBREAK
   - M拡張 8命令: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU
@@ -108,7 +110,7 @@ EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO へ�
 | CSR | 内容 |
 |:--|:--|
 | `mstatus` | MIE (bit3), MPIE (bit7)。MPP (bit12:11) は常に 11 |
-| `misa` | `0x40001101` (RV32IMA)。書き込みは無視 |
+| `misa` | `0x40001105` (RV32IMAC)。書き込みは無視 |
 | `mie` / `mip` | MSIE/MSIP (bit3), MTIE/MTIP (bit7), MEIE/MEIP (bit11)。`mip` は読み出し専用で割り込み線の状態を映す |
 | `mtvec` | BASE + MODE (0: direct, 1: vectored。vectored では割り込み N を BASE+4N へ) |
 | `mscratch` / `mepc` / `mcause` / `mtval` | トラップ用 |
@@ -123,7 +125,6 @@ EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO へ�
 
 | コード | 例外 | `mtval` |
 |:--|:--|:--|
-| 0 | 命令アドレス非整列 (分岐・ジャンプ先が 4 の倍数でない) | 飛び先アドレス |
 | 1 | 命令アクセスフォールト (命令ROM 0x0000_0000-0x0000_7FFF の外をフェッチ) | PC |
 | 2 | 不正命令 | 命令そのもの |
 | 3 | EBREAK | EBREAK の PC |
@@ -131,6 +132,8 @@ EX にある命令を取り消して (レジスタ・メモリ・CSR・MMIO へ�
 | 11 | ECALL | 0 |
 
 ロード・ストアのアクセスフォールト (未実装アドレスへのアクセス) は実装していません。
+C 拡張があるので分岐・ジャンプ先は常に 2 バイト境界になり、命令アドレス非整列例外 (0) は起きません。
+16 ビット命令の不正命令例外では、`mtval` はその 16 ビット (上位は 0) です。
 
 ### 割り込み (`mcause` bit31 = 1)
 
@@ -243,6 +246,21 @@ int main(void) {                        // hart 0
 ハート間のピンポン 1000 往復、共有カウンタの同時更新 (AMOADD / LR・SC / AMOSWAP の
 スピンロック)、コア間割り込みを自己検査し、`sim/tb_multicore.v` で確認しています。
 
+### オセロ (`examples/othello_embedded`)
+
+8x8 のマトリクスキーボードか USB キーボードで石を置き、盤面は UART と LED マトリクスに出ます。
+対局の前に毎回メニューが出ます (マトリクスのキー 1-9、USB キーボードの F1-F9 か数字キー)。
+
+| キー | 内容 |
+|:--|:--|
+| 1-6 | AI と対戦 (レベル 1 接待 / 2 Easy / 3 Medium / 4 Hard / 5 Expert / 6 Expert を 1 ハートで) |
+| 7 | 人対人 (同じキーボードで交互に打つ) |
+| 8 | AI 対戦で先手 / 後手を切り替え |
+| 9 | 色の呼び方を 赤・緑 / 黒・白 で切り替え (UART の表示だけ。LED マトリクスの色は変わらない) |
+
+8・9 は切り替えてメニューを出し直します。それ以外のキーは表示中の設定で始めます。先手は常に赤 (黒) です。
+AI 対戦の勝敗はレベルごとに集計され、リセットしても電源を切るまで残ります。
+
 ### オセロ AI の並列探索
 
 `examples/othello_embedded` のオセロ AI は、レベル 4 (Hard) と 5 (Expert) の探索を
@@ -258,7 +276,12 @@ int main(void) {                        // hart 0
 | 確認 | 内容 |
 |:--|:--|
 | `search_check.c` (PC 上) | ランダム対局 30 局 (1800 局面) で、深さ 2・4・5 のどれでも 1 ハートと 2 ハートの手と評価値が全局面で一致。2 スレッドで約 1.6〜1.7 倍 |
-| `search_bench.c` (`sim/tb_othello_mp.v`) | CPU 上で 1 ハートと 2 ハートの手が一致することと、サイクル数の比を確認 |
+| `search_bench.c` (`sim/tb_othello_mp.v`) | CPU 上 (深さ 2、3 局面) で手が一致し、1 ハート 6.00 M サイクル / 2 ハート 3.75 M サイクル (1.59 倍)。深さ 3 では 1.8 倍 |
+| 実機 | 中盤の 1 手で、レベル 6 が 752 ノード 1.217 s、レベル 5 が 730 ノード 0.732 s (約 1.66 倍。待ちループ修正前の版) |
+
+速度が 2 倍に届かないのは、最初の手を hart 0 だけで読む間は hart 1 が手持ち無沙汰になることと、
+データバスが 2 ハートで 1 本であることによります。待ちループでは共有変数を読み直す前に nop を
+挟み、待っている側がバスを使い続けないようにしています。
 
 ### アトミック命令 (A 拡張)
 
@@ -278,6 +301,26 @@ SoC (`cpu_top.v`) が読み出し・演算・書き込みをバスを占有し�
 - C からは GCC の `__atomic_*` 組み込み関数がそのまま使えます (`-march=rv32ima_zicsr`)
 - `sim/amo_test.S` (`sim/tb_amo.v`) が全命令の動作と予約の規則を自己検査します
 
+### 圧縮命令 (C 拡張)
+
+16 ビット命令はデコードの前に `src/rvc_expand.v` で同じ意味の 32 ビット命令に展開するので、
+デコーダ以降は RV32IMA のままです。
+
+- 命令ROM は 32 ビット単位で読みます。命令は 2 バイト境界にあり、32 ビット命令が
+  ワードをまたぐこともあるので、ハートのフェッチ部が前のワードの上位 16 ビットを
+  1 つ保持して命令を組み立てます (`rv_core.v` の IF ステージ)
+- 速度への影響: 上位 16 ビットに置かれた 16 ビット命令の次は ROM のワードを待たないので
+  遅れはありません。ジャンプ直後に、ワードの上位 16 ビットから始まる 32 ビット命令に
+  当たったときだけ 1 サイクル余分にかかります
+- JAL / JALR のリンク先は 16 ビット命令なら PC+2。`mepc` は bit 1 まで保持します
+- C で使うときは `-march=rv32imac_zicsr` (アトミック命令・CSR を使わないなら `rv32imc`) を指定します
+- `-march=rv32ima` には対応する libgcc が無く、乗算命令を使わない `rv32ia` 版が選ばれます
+  (`double` の演算などがソフトウェア乗算 `__mulsi3` になる)。`rv32imac` なら乗算命令を使う版になり、
+  オセロの探索は約 27% 速くなりました。`gcc -march=... -print-libgcc-file-name` で確認できます
+- `rvc_expand.v` は 16 ビットの全 49152 エンコーディングについて、GNU objdump / as による展開と
+  一致することを確認済み (違いは C.MV を仕様どおり ADD に展開する点と、予約エンコーディングを
+  不正命令にする点だけ)。公式テストの rv32i_m/C 27 本もパスします
+
 ## ディレクトリ構成
 
 ```
@@ -287,6 +330,7 @@ RISC_V_fpga/
 │   ├── fpga_top.v            # FPGA トップ (CPU + board_io + LED表示)
 │   ├── cpu_top.v             # CPU (SoC): ハート + 命令ROM・データRAM・UART・タイマ
 │   ├── rv_core.v             # ハート本体 (3段パイプライン + CSR)。メモリとはバスで接続
+│   ├── rvc_expand.v          # 圧縮命令 (C 拡張) を 32 ビット命令に展開
 │   ├── instruction_memory.v  # 命令ROM 32KB (BSRAM, $readmemh で初期化)
 │   ├── instruction_decoder.v # デコーダ
 │   ├── control_unit.v        # PC選択・ALU入力A選択
@@ -387,26 +431,25 @@ C プログラムをビルドして CPU で動かす手順は
 
 RISC-V International の適合性テスト
 [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) の
-rv32i_m/I・M・privilege を Icarus で流せます。期待値ファイルが同梱されている
+rv32i_m/I・M・C・privilege を Icarus で流せます。期待値ファイルが同梱されている
 最後の版 2.7.4 を使います (それ以降は Sail モデルで期待値を生成する方式)。
 必要なのは riscv64-unknown-elf-gcc、iverilog、Python 3 です。
 
 ```bash
 git clone --depth 1 --branch 2.7.4 https://github.com/riscv-non-isa/riscv-arch-test.git ../riscv-arch-test
-python3 sim/arch_test/run_arch_test.py ../riscv-arch-test          # 全 62 本
+python3 sim/arch_test/run_arch_test.py ../riscv-arch-test          # 全 89 本
 python3 sim/arch_test/run_arch_test.py ../riscv-arch-test add-01   # 一部だけ
 ```
 
 各テストを 1 ハートの `cpu_top` (`sim/arch_test/tb_arch_test.v`) で動かし、
-データRAM に残ったシグネチャを期待値と 1 ワードずつ比べます。現状は 62 本すべて PASS です。
+データRAM に残ったシグネチャを期待値と 1 ワードずつ比べます。現状は 89 本すべて PASS です。
 実行環境の決め事は次のとおりです。
 
 - 分岐命令のテストと jal-01 は 200 KB を超えて ROM (32 KB) に入らないので、
   テストケースを ROM に入る塊に分けて順に実行し、塊ごとに期待値と比べます。
   jal-01 の 3 ケースは単独でも数百 KB 先へ跳ぶため実行できず、結果にその数を出します。
-- privilege の不整列分岐・ジャンプ 8 本は、同梱の期待値が C 拡張ありの前提
-  (2 バイト境界への分岐が正当) なので、C なしの期待値
-  (`sim/arch_test/references/`、命令アドレス不整列例外の mcause・mepc・mtval を手で確認済み) を使います。
+- 各テストは `RVTEST_ISA` の ISA (+ Zicsr) でビルドします (期待値もそうして作られています)。
+  I・M・privilege は 32 ビット命令だけ、C は圧縮命令を含むコードになります。
 - Zifencei は対象外です (命令を書き換えて実行するテストで、命令は ROM からしか取れないため)。
 - A 拡張のテストは 2.7.4 にないので、`sim/tb_amo.v` と `examples/multicore_demo.c` で確認しています。
 
@@ -547,8 +590,8 @@ riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartf
 riscv64-unknown-elf-objcopy -O binary examples/multicore_demo.elf examples/multicore_demo.bin
 python tools/bin2hex.py examples/multicore_demo.bin > examples/multicore_demo.hex
 
-# othello (2 ハートで探索。探索の再帰が深いので各ハートのスタックを 10 KB に。double の演算に -lgcc)
-riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
+# othello (2 ハートで探索。圧縮命令で ROM を節約。探索の再帰が深いので各ハートのスタックを 10 KB に。double の演算に -lgcc)
+riscv64-unknown-elf-gcc -march=rv32imac_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
   -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S \
   examples/othello_embedded/main.c examples/othello_embedded/othello.c \
   examples/othello_embedded/evaluate.c examples/othello_embedded/search.c -lgcc \

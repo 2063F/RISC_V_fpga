@@ -3,12 +3,13 @@
 // Module Name: rv_core
 // Project Name: RISC-V RV32IM CPU
 // Target Devices: Tang Primer 25K (Gowin GW5A-LV25MG121NC1/I0)
-// Description: One RV32IM hart: a three-stage pipeline with its CSRs. Memory
+// Description: One RV32IMAC hart: a three-stage pipeline with its CSRs. Memory
 //              and devices live outside, in the SoC (cpu_top.v), behind an
 //              instruction fetch port and a data bus.
 //
-//   IF  fetch   : PC drives the instruction ROM
-//   ID  decode  : decode, immediate generation, register file read
+//   IF  fetch   : fpc drives the instruction ROM (one word at a time)
+//   ID  decode  : instruction alignment and C expansion (rvc_expand.v),
+//                 decode, immediate generation, register file read
 //   EX  execute : ALU / multiplier / divider, memory, write-back
 //
 // Why three stages
@@ -34,8 +35,7 @@
 // its PC, and the two instructions behind it are discarded exactly as for a
 // taken branch. Everything the trap decision needs is either registered in
 // ID/EX or derived from the low two address bits, so it never waits on the
-// full ALU result - except for a taken branch to a misaligned target, which
-// only redirects the PC (branches write nothing else).
+// full ALU result.
 //
 // An interrupt is only taken on an instruction's first cycle in EX. Once a
 // load or store has been sent to the data bus or the multiplier/divider has
@@ -44,9 +44,10 @@
 //
 // Instruction fetch port
 // ----------------------
-// ibus_addr is the PC. The ROM answers with a registered read, and that output
-// register IS the IF/ID instruction register, so ibus_ce must freeze it while
-// the pipeline stalls. ibus_valid = 0 marks a fetch outside the ROM.
+// ibus_addr is a word address. The ROM answers with a registered read, and
+// that output register IS the IF/ID instruction register, so ibus_ce must
+// freeze it while the pipeline stalls (and while ID still needs the word,
+// see the fetch stage). ibus_valid = 0 marks a fetch outside the ROM.
 //
 // Data bus
 // --------
@@ -74,7 +75,7 @@
 // after, which is exactly the old fixed timing: stores take one cycle, loads
 // two. The handshake is there so the bus can be shared and slaves can be slow.
 //
-// Dependencies: riscv_defines.vh, instruction_decoder.v, imm_gen.v,
+// Dependencies: riscv_defines.vh, rvc_expand.v, instruction_decoder.v, imm_gen.v,
 //               register_file.v, control_unit.v, alu.v, multiplier.v,
 //               divider.v, csr_file.v
 //////////////////////////////////////////////////////////////////////////////////
@@ -121,23 +122,55 @@ module rv_core #(
     localparam [31:0] NOP_INST = 32'h0000_0013;
 
     // =========================================================================
-    // Stage 1: Instruction Fetch
+    // Stage 1: Instruction Fetch (and alignment, for the C extension)
     // =========================================================================
-    reg  [31:0] pc;
-    wire [31:0] next_pc;
-
-    wire [31:0] fetched_inst  = ibus_rdata;
-    wire        fetched_valid = ibus_valid;
-
-    // IF/ID. The ROM's port-A output register holds the instruction itself, so
-    // only the PC and the valid bit need registers here.
+    // The ROM reads whole words, while instructions are 2 or 4 bytes long and
+    // only halfword aligned. fpc is the word being fetched; the ROM output
+    // register (ibus_rdata, the IF/ID instruction register) holds the word
+    // after it was presented. ifid_pc is the PC of the instruction to decode,
+    // and hold keeps the upper half of the previous word when the instruction
+    // starts there:
+    //
+    //   hold_v = 0: the ROM word is the one at ifid_pc (bits 1:0 cleared)
+    //   hold_v = 1: hold is the halfword at ifid_pc (bit 1 set), and the ROM
+    //               word is the next one, at ifid_pc + 2
+    //
+    // A 32-bit instruction that starts in the upper half of a word with
+    // nothing held (only right after a jump there) needs one more fetch: ID
+    // then puts the half into hold and issues nothing for a cycle. A 16-bit
+    // instruction taken from hold leaves the ROM word for the next one, so the
+    // fetch holds still for a cycle (ibus_ce = 0).
+    reg  [31:0] fpc;
     reg  [31:0] ifid_pc;
-    reg         ifid_valid;
+    reg         ifid_valid;     // the ROM word belongs to the current stream
+    reg  [15:0] hold;
+    reg         hold_v;
+    reg         hold_ok;        // hold came from a word inside the ROM
 
-    // One mux on the fetch path, not two: both selects are register outputs, so
-    // combining them costs no extra logic on the data path itself.
-    wire        id_inst_valid = ifid_valid && fetched_valid;
-    wire [31:0] id_inst       = id_inst_valid ? fetched_inst : NOP_INST;
+    wire [31:0] word    = ibus_rdata;
+    wire        word_ok = ibus_valid;
+
+    wire [15:0] id_lo   = hold_v ? hold : (ifid_pc[1] ? word[31:16] : word[15:0]);
+    wire [15:0] id_hi   = hold_v ? word[15:0] : word[31:16];
+    wire        id_rvc  = (id_lo[1:0] != 2'b11);
+    wire        id_need_more = !hold_v && ifid_pc[1] && !id_rvc;
+    wire        id_fault = hold_v ? !(hold_ok && (id_rvc || word_ok)) : !word_ok;
+
+    // An instruction leaves ID this cycle
+    wire        id_issue      = ifid_valid && !id_need_more;
+    wire        id_inst_valid = id_issue && !id_fault;
+
+    // The instruction as fetched (for mtval), and expanded to 32 bits
+    wire [31:0] id_raw = id_rvc ? {16'd0, id_lo} : {id_hi, id_lo};
+    wire [31:0] rvc_inst;
+    wire        rvc_illegal;
+    wire [31:0] id_inst = !id_inst_valid ? NOP_INST : (id_rvc ? rvc_inst : id_raw);
+
+    rvc_expand rvc (
+        .c       (id_lo),
+        .inst    (rvc_inst),
+        .illegal (rvc_illegal)
+    );
 
     // =========================================================================
     // Stage 2: Decode and Register Read
@@ -156,7 +189,8 @@ module rv_core #(
     wire        id_csr_illegal;
     // An unknown CSR address, or a write to a read-only one, is an illegal
     // instruction just like a bad opcode.
-    wire        id_illegal = id_dec_illegal || (id_csr && id_csr_illegal);
+    wire        id_illegal = id_dec_illegal || (id_csr && id_csr_illegal) ||
+                             (id_inst_valid && id_rvc && rvc_illegal);
 
     wire [31:0] rf_rd1, rf_rd2;
 
@@ -182,7 +216,8 @@ module rv_core #(
     reg         ex_ecall, ex_ebreak, ex_mret;
     reg         ex_csr, ex_csr_write;
     reg  [4:0]  ex_rs1_idx;      // uimm of the CSR immediate forms
-    reg  [31:0] ex_inst;         // for mtval on an illegal instruction
+    reg  [31:0] ex_inst;         // as fetched (16 bits zero-extended): mtval, AMO funct5
+    reg         ex_rvc;          // a 16-bit instruction: the next one is at ex_pc + 2
 
     // Stall bookkeeping
     reg         load_pending;    // 1 once the bus has taken a load, until its data
@@ -215,30 +250,27 @@ module rv_core #(
     wire ls_misaligned = ((ex_funct3[1:0] == 2'b10) && (addr_lo != 2'b00)) ||
                          ((ex_funct3[1:0] == 2'b01) &&  addr_lo[0]);
 
-    // PCs are always word aligned, so a JAL or branch target is misaligned
-    // exactly when imm[1] is set. JALR clears bit 0 of its target itself.
-    wire is_jalr          = (ex_opcode == `OP_JALR);
-    wire exc_jump_mis     = ex_jump && (is_jalr ? addr_lo[1] : ex_imm[1]);
+    // With the C extension every jump and branch target is halfword aligned
+    // (immediates are even, and JALR clears bit 0), so there is no
+    // instruction-address-misaligned exception.
+    //
     // A misaligned SC or AMO is a store/AMO fault, a misaligned LR a load one.
     wire ex_amo_store     = ex_amo && (ex_inst[31:27] != `AMO_LR);
     wire exc_load_mis     = ex_mem_read  && !ex_amo_store && ls_misaligned;
     wire exc_store_mis    = (ex_mem_write || ex_amo_store) && ls_misaligned;
 
     wire exc_early = ex_valid && (ex_fetch_fault || ex_illegal || ex_ecall ||
-                                  ex_ebreak || exc_jump_mis ||
-                                  exc_load_mis || exc_store_mis);
+                                  ex_ebreak || exc_load_mis || exc_store_mis);
 
     wire        irq_pending;
     wire [3:0]  irq_code;
     wire        irq_take = ex_valid && irq_pending && !load_pending && !mcycle_started;
 
-    // trap_early is everything except a taken branch to a misaligned target.
-    // It gates the register, memory, CSR and MMIO writes and the stalls. The
-    // branch case depends on the branch comparison, so it is kept off those
-    // paths; a branch writes none of them anyway.
+    // trap_early gates the register, memory, CSR and MMIO writes and the
+    // stalls. (It is every trap; the name stays from when a misaligned branch
+    // target was a later one.)
     wire trap_early     = irq_take || exc_early;
-    wire exc_branch_mis = ex_valid && ex_branch && ex_imm[1] && (pc_sel != 2'd0);
-    wire trap           = trap_early || exc_branch_mis;
+    wire trap           = trap_early;
 
     wire mret_take = ex_valid && ex_mret && !trap_early;
 
@@ -262,9 +294,6 @@ module rv_core #(
             trap_val  = ex_pc;          // optional (0 is also legal); riscv-arch-test expects the PC
         end else if (ex_ecall) begin
             trap_code = `EXC_ECALL_M;
-        end else if (exc_jump_mis || exc_branch_mis) begin
-            trap_code = `EXC_INST_MISALIGNED;
-            trap_val  = is_jalr ? jalr_target : branch_target;
         end else if (exc_load_mis) begin
             trap_code = `EXC_LOAD_MISALIGNED;
             trap_val  = alu_result;
@@ -365,7 +394,7 @@ module rv_core #(
     // =========================================================================
     // Debug assignment
     // =========================================================================
-    assign debug_pc = ex_valid ? (ex_pc + 32'd4) : pc;
+    assign debug_pc = ex_valid ? (ex_pc + 32'd4) : ifid_pc;
 
     // =========================================================================
     // Data bus
@@ -380,8 +409,16 @@ module rv_core #(
     assign dbus_amo    = ex_amo;
     assign dbus_amo_op = ex_inst[31:27];
 
-    assign ibus_addr = pc;
-    assign ibus_ce   = !stall;
+    // The ROM word is used up unless a 16-bit instruction came from hold.
+    //
+    // A redirect does not need to enable the ROM: the word read in that cycle
+    // is thrown away (ifid_valid goes low) and the new target is presented in
+    // the next one, enabled because ifid_valid is then low. Leaving redirect
+    // out keeps the branch comparison off the ROM's clock enable.
+    wire fetch_next = !ifid_valid || !(hold_v && id_rvc);
+
+    assign ibus_addr = fpc;
+    assign ibus_ce   = !stall && fetch_next;
 
     // =========================================================================
     // CSRs and trap state
@@ -530,7 +567,7 @@ module rv_core #(
         case (ex_wb_sel)
             `WB_ALU: reg_write_data = exec_result;
             `WB_MEM: reg_write_data = selected_mem_data;
-            `WB_PC4: reg_write_data = ex_pc + 32'd4;
+            `WB_PC4: reg_write_data = ex_pc + (ex_rvc ? 32'd2 : 32'd4);
             `WB_CSR: reg_write_data = csr_rdata;
         endcase
     end
@@ -539,22 +576,17 @@ module rv_core #(
     assign jalr_target   = (ex_rs1_data + ex_imm) & 32'hFFFF_FFFE;
     assign branch_target = ex_pc + ex_imm;
 
+    // Where a redirect goes
     always @(*) begin
-        if (trap) begin
+        if (trap)
             next_pc_temp = trap_vector;
-        end else if (mret_take) begin
+        else if (mret_take)
             next_pc_temp = mepc;
-        end else if (branch_or_jump) begin
-            case (pc_sel)
-                2'd1:    next_pc_temp = branch_target;
-                2'd2:    next_pc_temp = jalr_target;
-                default: next_pc_temp = pc + 32'd4;
-            endcase
-        end else begin
-            next_pc_temp = pc + 32'd4;
-        end
+        else if (pc_sel == 2'd2)
+            next_pc_temp = jalr_target;
+        else
+            next_pc_temp = branch_target;
     end
-    assign next_pc = next_pc_temp;
 
     // =========================================================================
     // Pipeline Registers
@@ -565,9 +597,13 @@ module rv_core #(
     // gates everything that could have an effect.
     always @(posedge clk) begin
         if (!rst_n) begin
-            pc             <= 32'd0;
+            fpc            <= 32'd0;
             ifid_pc        <= 32'd0;
             ifid_valid     <= 1'b0;
+            hold           <= 16'd0;
+            hold_v         <= 1'b0;
+            hold_ok        <= 1'b0;
+            ex_rvc         <= 1'b0;
             ex_valid       <= 1'b0;
             ex_pc          <= 32'd0;
             ex_rs1_data    <= 32'd0;
@@ -609,17 +645,27 @@ module rv_core #(
             mcycle_started <= 1'b0;
             instret_pulse  <= ex_valid && !trap;
 
-            pc <= next_pc;
-
             if (redirect) begin
-                ifid_pc    <= 32'd0;
+                fpc        <= {next_pc_temp[31:2], 2'b00};
+                ifid_pc    <= {next_pc_temp[31:1], 1'b0};
                 ifid_valid <= 1'b0;
+                hold_v     <= 1'b0;
                 ex_valid   <= 1'b0;
             end else begin
-                ifid_pc    <= pc;
+                if (fetch_next)
+                    fpc <= fpc + 32'd4;
                 ifid_valid <= 1'b1;
 
-                ex_valid     <= ifid_valid;
+                if (ifid_valid) begin
+                    if (id_issue)
+                        ifid_pc <= ifid_pc + (id_rvc ? 32'd2 : 32'd4);
+                    // See the table at the top of the fetch stage
+                    hold_v  <= hold_v ? !id_rvc : (ifid_pc[1] ? id_need_more : id_rvc);
+                    hold    <= word[31:16];
+                    hold_ok <= word_ok;
+                end
+
+                ex_valid     <= id_issue;
                 ex_pc        <= ifid_pc;
                 ex_rs1_data  <= id_rs1_data;
                 ex_rs2_data  <= id_rs2_data;
@@ -638,7 +684,8 @@ module rv_core #(
                 ex_funct3    <= id_inst[14:12];
                 ex_opcode    <= id_inst[6:0];
 
-                ex_fetch_fault <= ifid_valid && !fetched_valid;
+                ex_fetch_fault <= id_issue && id_fault;
+                ex_rvc         <= id_rvc;
                 ex_illegal     <= id_illegal;
                 ex_ecall       <= id_ecall;
                 ex_ebreak      <= id_ebreak;
@@ -646,7 +693,7 @@ module rv_core #(
                 ex_csr         <= id_csr;
                 ex_csr_write   <= id_csr_write;
                 ex_rs1_idx     <= id_rs1;
-                ex_inst        <= id_inst;
+                ex_inst        <= id_raw;
             end
         end
     end
