@@ -26,9 +26,18 @@ static double now(void) {
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+uint32_t search_time_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)(ts.tv_sec * 1000000ull + ts.tv_nsec / 1000);
+}
+
 int main(int argc, char **argv) {
     int games = argc > 1 ? atoi(argv[1]) : 20;
     int depth = argc > 2 ? atoi(argv[2]) : 4;
+    // "timed": also check that the timed search stopped at `depth` gives the
+    // fixed-depth score, on one hart and on two
+    int timed = argc > 3 && argv[3][0] == 't';
 
     pthread_t t;
     pthread_create(&t, NULL, hart1, NULL);
@@ -61,6 +70,17 @@ int main(int argc, char **argv) {
                 mismatches++;
                 printf("MISMATCH game %d: 1 hart %d (%.6f), 2 harts %d (%.6f)\n",
                        g, r1.square, r1.score, r2.square, r2.score);
+            }
+            if (timed) {
+                SearchResult t1 = find_best_move_timed(black, white, is_black, 100000000u, depth, 1);
+                SearchResult t2 = find_best_move_timed(black, white, is_black, 100000000u, depth, 2);
+                if (t1.score != r1.score || t2.score != r1.score || t1.square < 0 ||
+                    t2.square < 0) {
+                    mismatches++;
+                    printf("TIMED MISMATCH game %d: fixed %.6f, timed 1 hart %.6f (d%d), "
+                           "2 harts %.6f (d%d)\n", g, r1.score, t1.score, t1.depth_reached,
+                           t2.score, t2.depth_reached);
+                }
             }
 
             // continue the game with a random legal move

@@ -31,6 +31,20 @@ SearchResult find_best_move(Bitboard black, Bitboard white, int player_is_black,
  */
 void search_hart_main(void);
 
+/*
+ * 持ち時間制の探索 (反復深化)。深さ 1, 2, ... と読み、time_us マイクロ秒を
+ * 過ぎたら打ち切って、読み切った最後の深さの最善手を返す
+ * (depth_reached がその深さ)。終局まで読み切ったとき、max_depth に
+ * 達したとき、持ち時間の 1/3 を使ったとき (次の深さは間に合わない) にも
+ * そこで止める。深さ 1 は時間に関係なく読み切る。前の深さの最善手を
+ * 次の深さで最初に読む。
+ */
+SearchResult find_best_move_timed(Bitboard black, Bitboard white, int player_is_black,
+                                   uint32_t time_us, int max_depth, int harts);
+
+/* 持ち時間の時計 (マイクロ秒、一周してよい)。探索を使うプログラムが用意する */
+uint32_t search_time_us(void);
+
 /* find_weak_move の手の選び方 */
 typedef enum {
     PICK_WORST,   /* 悪い方から1/3。角は（角しか打てない場合を除き）取らない（接待用） */

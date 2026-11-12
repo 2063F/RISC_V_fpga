@@ -53,9 +53,10 @@ static void store_killer(SearchCtx *c, int depth, int move) {
 }
 
 /* moves を手番側から見た 1 手先の評価値 (キラームーブは優先) の降順に並べて
-   sqs に入れ、手の数を返す */
-static int order_moves(const SearchCtx *c, Bitboard black, Bitboard white, int player_is_black,
-                       Bitboard moves, int depth, int *sqs) {
+   sqs に入れ、手の数を返す。インライン展開させない: 展開されると評価値の
+   配列 (512 バイト) が negamax のスタックフレームに入り、深さ 1 ごとに積まれる */
+static __attribute__((noinline)) int order_moves(const SearchCtx *c, Bitboard black, Bitboard white, int player_is_black,
+                       Bitboard moves, int depth, signed char *sqs) {
     Bitboard P = player_is_black ? black : white;
     Bitboard O = player_is_black ? white : black;
     double order_score[64];
@@ -80,7 +81,7 @@ static int order_moves(const SearchCtx *c, Bitboard black, Bitboard white, int p
         int best = i;
         for (int j = i + 1; j < n; j++) if (order_score[j] > order_score[best]) best = j;
         if (best != i) {
-            int ts = sqs[i]; sqs[i] = sqs[best]; sqs[best] = ts;
+            signed char ts = sqs[i]; sqs[i] = sqs[best]; sqs[best] = ts;
             double td = order_score[i]; order_score[i] = order_score[best]; order_score[best] = td;
         }
     }
@@ -101,11 +102,28 @@ static void play(Bitboard black, Bitboard white, int player_is_black, int sq,
 }
 
 static double split(Bitboard black, Bitboard white, int player_is_black, int depth,
-                    double alpha, double beta, const int *sqs, int n,
+                    double alpha, double beta, const signed char *sqs, int n,
                     double first_val, int root, int *out_move);
 
 static int job_active;      /* ハート 0 だけが読み書きする */
 static int hart1_ready;     /* search_hart_main が動いていれば 1 */
+
+/*
+ * 持ち時間 (find_best_move_timed)。どちらのハートも 16 ノードごとに (ハート 0
+ * は分割点で相手を待つ間も) 時計を見て、期限を過ぎたら search_stop を立てる。
+ * 立っていれば両ハートの negamax はすぐ 0 を返し、その深さの探索は捨てる。
+ */
+static int search_stop;
+static int time_check;      /* 時計を見るか (探索の前にハート 0 が決める) */
+static uint32_t deadline;   /* search_time_us() の期限 */
+
+static int time_up(void) {
+    if (time_check && (int32_t)(search_time_us() - deadline) >= 0) {
+        __atomic_store_n(&search_stop, 1, __ATOMIC_RELAXED);
+        return 1;
+    }
+    return 0;
+}
 
 /*
  * negamax + αβ枝刈り + PVS(NegaScout)。
@@ -116,7 +134,9 @@ static int hart1_ready;     /* search_hart_main が動いていれば 1 */
 static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_is_black,
                       int depth, double alpha, double beta, int can_split, int root,
                       int *out_move) {
+    if (__atomic_load_n(&search_stop, __ATOMIC_RELAXED)) return 0.0;
     c->nodes++;
+    if ((c->nodes & 15) == 0 && time_up()) return 0.0;
 
     Bitboard P = player_is_black ? black : white;
     Bitboard O = player_is_black ? white : black;
@@ -142,7 +162,7 @@ static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_i
         return evaluate_position(black, white, player_is_black);
     }
 
-    int sqs[64];
+    signed char sqs[64];    /* 1 バイトずつ: 深く読むときのスタックを節約する */
     int n = order_moves(c, black, white, player_is_black, moves, depth, sqs);
 
     double best_val = -INF;
@@ -191,7 +211,7 @@ static struct {
     double alpha0, beta;    /* ノードに来たときの窓 */
     int root;               /* ルートなら 1 (同点の扱い) */
     int n;
-    const int *sqs;         /* 並べた手 (ハート 0 のスタック上。RAM は共有) */
+    const signed char *sqs; /* 並べた手 (ハート 0 のスタック上。RAM は共有) */
     int next;               /* 次に読む手の番号 (AMO で取り合う) */
     unsigned lock;          /* best_val / best_idx を守る */
     double best_val;
@@ -228,7 +248,7 @@ static void job_unlock(void) {
 static void split_worker(SearchCtx *c) {
     for (;;) {
         int i = __atomic_fetch_add(&job.next, 1, __ATOMIC_RELAXED);
-        if (i >= job.n) break;
+        if (i >= job.n || __atomic_load_n(&search_stop, __ATOMIC_RELAXED)) break;
 
         job_lock();
         double alpha = job.best_val > job.alpha0 ? job.best_val : job.alpha0;
@@ -265,7 +285,7 @@ static void split_worker(SearchCtx *c) {
 
 /* PV ノードの 1 番目以降の手をハート 1 と手分けして読む (ハート 0 から呼ぶ) */
 static double split(Bitboard black, Bitboard white, int player_is_black, int depth,
-                    double alpha, double beta, const int *sqs, int n,
+                    double alpha, double beta, const signed char *sqs, int n,
                     double first_val, int root, int *out_move) {
     job.black = black;
     job.white = white;
@@ -284,8 +304,10 @@ static double split(Bitboard black, Bitboard white, int player_is_black, int dep
     __atomic_fetch_add(&job.gen, 1u, __ATOMIC_RELEASE);   /* ハート 1 を起こす */
 
     split_worker(&ctx[0]);
-    while (__atomic_load_n(&job.busy, __ATOMIC_ACQUIRE))
+    while (__atomic_load_n(&job.busy, __ATOMIC_ACQUIRE)) {
         spin_pause();
+        time_up();      /* 相手の読みが長引いても期限は守る */
+    }
     job_active = 0;
 
     if (out_move) *out_move = job.sqs[job.best_idx];
@@ -332,6 +354,48 @@ SearchResult find_best_move(Bitboard black, Bitboard white, int player_is_black,
     result.nodes = ctx[0].nodes + ctx[1].nodes;
     result.depth_reached = depth;
     return result;
+}
+
+SearchResult find_best_move_timed(Bitboard black, Bitboard white, int player_is_black,
+                                   uint32_t time_us, int max_depth, int harts) {
+    reset_ctx(&ctx[0]);
+    ctx[1].nodes = 0;
+    job.search_id++;
+
+    int empty = 64 - popcount(black) - popcount(white);
+    if (max_depth >= MAX_KILLER_DEPTH) max_depth = MAX_KILLER_DEPTH - 1;
+
+    uint32_t start = search_time_us();
+    deadline = start + time_us;
+
+    SearchResult best;
+    best.square = -1;
+    best.score = 0.0;
+    best.depth_reached = 0;
+
+    for (int d = 1; d <= max_depth; d++) {
+        /* 前の深さの最善手をルートで最初に読む (ルートのキラー表に入れる) */
+        if (best.square >= 0) store_killer(&ctx[0], d, best.square);
+
+        search_stop = 0;
+        time_check = (d > 1);           /* 深さ 1 は必ず読み切る */
+        int move = -1;
+        double v = negamax(&ctx[0], black, white, player_is_black, d, -INF, INF,
+                           harts >= 2, 1, &move);
+        if (search_stop) break;         /* 時間切れ: この深さは捨てる */
+
+        best.square = move;
+        best.score = v;
+        best.depth_reached = d;
+        if (d >= empty) break;          /* 終局まで読み切った */
+        /* 次の深さは今までの数倍かかる。持ち時間の 1/3 を使ったら打つ */
+        if (search_time_us() - start > time_us / 3u) break;
+    }
+    time_check = 0;
+    search_stop = 0;
+
+    best.nodes = ctx[0].nodes + ctx[1].nodes;
+    return best;
 }
 
 #define CORNER_SQUARES 0x8100000000000081ULL

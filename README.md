@@ -249,7 +249,7 @@ int main(void) {                        // hart 0
 ### オセロ (`examples/othello_embedded`)
 
 8x8 のマトリクスキーボードか USB キーボードで石を置き、盤面は UART と LED マトリクスに出ます。
-対局の前に毎回メニューが出ます (マトリクスのキー 1-9、USB キーボードの F1-F9 か数字キー)。
+対局の前に毎回メニューが出ます (マトリクスのキー 1-10、USB キーボードの F1-F10 か数字キー 1-9・0)。
 
 | キー | 内容 |
 |:--|:--|
@@ -257,9 +257,16 @@ int main(void) {                        // hart 0
 | 7 | 人対人 (同じキーボードで交互に打つ) |
 | 8 | AI 対戦で先手 / 後手を切り替え |
 | 9 | 色の呼び方を 赤・緑 / 黒・白 で切り替え (UART の表示だけ。LED マトリクスの色は変わらない) |
+| 10 | レベル 5・6 の 1 手の持ち時間を 1 / 3 / 10 / 30 / 50 秒で切り替え (リセット後は 3 秒) |
 
-8・9 は切り替えてメニューを出し直します。それ以外のキーは表示中の設定で始めます。先手は常に赤 (黒) です。
+8-10 は切り替えてメニューを出し直します。それ以外のキーは表示中の設定で始めます。先手は常に赤 (黒) です。
 AI 対戦の勝敗はレベルごとに集計され、リセットしても電源を切るまで残ります。
+
+レベル 5・6 は持ち時間制です (`find_best_move_timed`)。深さ 1, 2, 3, ... と読み進め (反復深化)、
+持ち時間が来たら打ち切って、読み切った最後の深さの最善手を打ちます。前の深さの最善手を次の深さで
+最初に読むので枝刈りがよく効き、残りの空きマスまで読めたら (終局まで読み切ったら) そこで止めます。
+持ち時間の 1/3 を使った時点で次の深さは間に合わないと見て打ちます。AI の手ごとに読み切った深さと
+時間を表示します。同じ持ち時間なら 2 ハートのレベル 5 の方が深く読めます。
 
 ### オセロ AI の並列探索
 
@@ -590,9 +597,9 @@ riscv64-unknown-elf-gcc -march=rv32ima_zicsr -mabi=ilp32 -O2 -nostdlib -nostartf
 riscv64-unknown-elf-objcopy -O binary examples/multicore_demo.elf examples/multicore_demo.bin
 python tools/bin2hex.py examples/multicore_demo.bin > examples/multicore_demo.hex
 
-# othello (2 ハートで探索。圧縮命令で ROM を節約。探索の再帰が深いので各ハートのスタックを 10 KB に。double の演算に -lgcc)
+# othello (2 ハートで探索。圧縮命令で ROM を節約。探索の再帰が深いので各ハートのスタックを 12 KB に。double の演算に -lgcc)
 riscv64-unknown-elf-gcc -march=rv32imac_zicsr -mabi=ilp32 -O2 -nostdlib -nostartfiles -I examples -T tools/link_mp.ld \
-  -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S \
+  -Wl,--defsym=__hart_stack_size=0x3000 tools/crt0.S \
   examples/othello_embedded/main.c examples/othello_embedded/othello.c \
   examples/othello_embedded/evaluate.c examples/othello_embedded/search.c -lgcc \
   -o examples/othello_embedded/othello.elf

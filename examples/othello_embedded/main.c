@@ -23,19 +23,23 @@
 //   2 Easy   - plays a random legal move.
 //   3 Medium - picks from the best third of its moves (1-ply evaluation).
 //   4 Hard   - alpha-beta search, depth 2.
-//   5 Expert - alpha-beta search, depth SEARCH_DEPTH, on both harts.
-//   6 Expert, 1 hart - the same search on hart 0 alone, to compare the time.
-// After reset: level 1, you move first, Red / Green.
+//   5 Expert - iterative deepening on both harts, within the time per move
+//              chosen in the menu (key 10): depth 1, 2, 3, ... until the time
+//              is up, then the best move of the deepest finished depth. Near
+//              the end it reads to the end of the game.
+//   6 Expert, 1 hart - the same on hart 0 alone, to compare the depth reached.
+// After reset: level 1, you move first, Red / Green, 3 s per move.
 //
 // Hart 1 runs search_hart_main() and takes part in the searches of levels 4
-// and 5: the two harts share out the moves at the root (see search.c). Levels
-// 5 and 6 pick the same moves; each AI move prints how long it took.
+// and 5: the two harts share out the moves (see search.c). With the same time
+// level 5 gets further than level 6; each AI move prints the depth it
+// finished and how long it took.
 //
 // Build (hart 1 needs link_mp.ld; the search stack wants more than the
-// default 4 KB per hart; a depth-5 endgame search uses about 7 KB):
+// default 4 KB per hart: about 300 bytes per ply, see MAX_SEARCH_DEPTH):
 //   riscv64-unknown-elf-gcc -march=rv32imac_zicsr -mabi=ilp32 -O2 -nostdlib
 //     -nostartfiles -I examples -T tools/link_mp.ld
-//     -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S
+//     -Wl,--defsym=__hart_stack_size=0x3000 tools/crt0.S
 //     examples/othello_embedded/{main,othello,evaluate,search}.c -lgcc
 //     -o examples/othello_embedded/othello.elf
 // =============================================================================
@@ -69,17 +73,16 @@
 #define KBD_COLS 8
 #define KBD_IDLE 0xFFu
 
-// AI search depth. The original PC engine used depth<=30 with a ~25MB
-// transposition table and a 1.2s clock-based time limit; none of that fits
-// this CPU (32KB ROM / 64KB RAM, no timer), so the search here is a plain
-// fixed-depth alpha-beta walk (see search.c). Raise this if the AI feels
-// too weak and the move still returns in acceptable time; lower it if a
-// move takes too long.
-#define SEARCH_DEPTH 4
+// Deepest search of the timed levels. Each ply puts one negamax frame on the
+// stack (288 bytes), so with the 12 KB stacks (see the build line above) this
+// leaves room for passes and the evaluation below the deepest one.
+#define MAX_SEARCH_DEPTH 20
 
-// AI levels. depth 0 = no search, choose with find_weak_move(pick);
-// otherwise find_best_move at that depth on `harts` harts.
+// AI levels. depth 0 = no search, choose with find_weak_move(pick); depth
+// TIMED = iterative deepening within think_s seconds; otherwise
+// find_best_move at that depth. On `harts` harts.
 #define LEVEL_COUNT 6
+#define TIMED       (-1)
 
 typedef struct {
     const char *name;
@@ -89,13 +92,25 @@ typedef struct {
 } LevelDef;
 
 static const LevelDef levels[LEVEL_COUNT] = {
-    { "1 Settai (for kids)", PICK_WORST,  0,            1 },
-    { "2 Easy",              PICK_RANDOM, 0,            1 },
-    { "3 Medium",            PICK_GOOD,   0,            1 },
-    { "4 Hard",              PICK_GOOD,   2,            2 },
-    { "5 Expert",            PICK_GOOD,   SEARCH_DEPTH, 2 },
-    { "6 Expert, 1 hart",    PICK_GOOD,   SEARCH_DEPTH, 1 },
+    { "1 Settai (for kids)", PICK_WORST,  0,     1 },
+    { "2 Easy",              PICK_RANDOM, 0,     1 },
+    { "3 Medium",            PICK_GOOD,   0,     1 },
+    { "4 Hard",              PICK_GOOD,   2,     2 },
+    { "5 Expert",            PICK_GOOD,   TIMED, 2 },
+    { "6 Expert, 1 hart",    PICK_GOOD,   TIMED, 1 },
 };
+
+// Time per move of the timed levels, chosen in the menu (key 10). 50 s keeps
+// within a one-minute-per-move rule with room for the move to be played.
+static const int think_choices[] = { 1, 3, 10, 30, 50 };
+#define THINK_CHOICES (int)(sizeof think_choices / sizeof think_choices[0])
+static int think_idx = 1;     // 3 s after reset
+
+// The clock of the timed search (search.c)
+uint32_t search_time_us(void)
+{
+    return (uint32_t)timer_now();
+}
 
 // The game set up by the menu (setup_game). Plain statics: back to the
 // defaults after a reset.
@@ -362,8 +377,8 @@ static void print_result(Bitboard black, Bitboard white)
 }
 
 // A key from wait_key_press as a menu number: matrix keys as they are (1-64),
-// on a USB keyboard F1-F12 as 1-12 and the number keys 1-9 as 1-9. Any other
-// key gives 0.
+// on a USB keyboard F1-F12 as 1-12, the number keys 1-9 as 1-9 and 0 as 10.
+// Any other key gives 0.
 static int menu_number(int key, int from_usb)
 {
     if (!from_usb)
@@ -373,10 +388,12 @@ static int menu_number(int key, int from_usb)
         return idx + 1;                             // F1-F12
     if (idx >= USBIDX_DIGIT1 && idx < USBIDX_DIGIT1 + 9)
         return idx - USBIDX_DIGIT1 + 1;             // 1-9
+    if (idx == USBIDX_DIGIT1 + 9)
+        return 10;                                  // 0
     return 0;
 }
 
-// The menu before every game. Keys 1-7 choose the game and start it, 8 and 9
+// The menu before every game. Keys 1-7 choose the game and start it, 8 to 10
 // change a setting and show the menu again, any other key starts the game
 // as shown.
 static void setup_game(void)
@@ -389,11 +406,12 @@ static void setup_game(void)
         printf("  8  Against the AI you move: %s\n",
                human_black ? "first" : "second");
         printf("  9  Sides: %s\n", black_white ? "Black / White" : "Red / Green");
+        printf(" 10  Time per move at levels 5 and 6: %d s\n", think_choices[think_idx]);
         if (two_players)
             uart_print("(other keys: two players)\n");
         else
             printf("(other keys: vs AI, level %s)\n", levels[level].name);
-        uart_print("Keys 1-9 on the matrix, F1-F9 or 1-9 on a USB keyboard.\n");
+        uart_print("Keys 1-10 on the matrix, F1-F10 or 1-9 and 0 on a USB keyboard.\n");
 
         int from_usb;
         usb_key_flush();
@@ -408,6 +426,9 @@ static void setup_game(void)
             continue;
         } else if (n == 9) {
             black_white = !black_white;
+            continue;
+        } else if (n == 10) {
+            think_idx = (think_idx + 1) % THINK_CHOICES;
             continue;
         }
         break;
@@ -537,9 +558,15 @@ int main(void)
                 printf("AI (%s) is thinking...\n", side_name(current_is_black));
                 const LevelDef *lv = &levels[level];
                 uint32_t t0 = (uint32_t)timer_now();     // microseconds
-                SearchResult res = (lv->depth == 0)
-                    ? find_weak_move(black, white, current_is_black, lv->pick, rng_next())
-                    : find_best_move(black, white, current_is_black, lv->depth, lv->harts);
+                SearchResult res;
+                if (lv->depth == 0)
+                    res = find_weak_move(black, white, current_is_black, lv->pick, rng_next());
+                else if (lv->depth == TIMED)
+                    res = find_best_move_timed(black, white, current_is_black,
+                                               (uint32_t)think_choices[think_idx] * 1000000u,
+                                               MAX_SEARCH_DEPTH, lv->harts);
+                else
+                    res = find_best_move(black, white, current_is_black, lv->depth, lv->harts);
                 uint32_t ms = ((uint32_t)timer_now() - t0) / 1000u;
                 if (res.square >= 0) {
                     Bitboard newP, newO;
@@ -548,7 +575,8 @@ int main(void)
                     white = current_is_black ? newO : newP;
                     char buf[3];
                     square_to_str(res.square, buf);
-                    printf("AI played %s (nodes=%d, %d.%d%d%d s)\n", buf, (int)res.nodes,
+                    printf("AI played %s (depth %d, nodes=%d, %d.%d%d%d s)\n", buf,
+                           res.depth_reached, (int)res.nodes,
                            (int)(ms / 1000u), (int)(ms / 100u % 10u), (int)(ms / 10u % 10u),
                            (int)(ms % 10u));
                 }
