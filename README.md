@@ -248,7 +248,13 @@ int main(void) {                        // hart 0
 
 ### オセロ (`examples/othello_embedded`)
 
-8x8 のマトリクスキーボードか USB キーボードで石を置き、盤面は UART と LED マトリクスに出ます。
+8x8 のマトリクスキーボードか USB キーボードで石を置き、盤面は UART・LED マトリクス・VGA モニタに出ます。
+
+VGA (640x480, `src/vga_board.v`) には、盤面の上に置ける場所 (黄色の点) と直前の手 (赤い点) を描き、
+盤の周りに文字で状況を出します: 1 行目に対局の設定、左に両者の石数と手番 (`>`)、右に直前の手と AI の
+読んだ深さ・時間、最下行に「Your move」などの案内。メニューは盤を消して画面全体に文字で出します。
+文字は 80x30 字 (8x16 ドット、font8x8 を縦に 2 倍。パブリックドメイン) で、CPU が `examples/vga.h` の
+関数でテキスト RAM に書きます (レジスタは `board_io.v` の先頭を参照)。
 UART の盤面は、色の呼び方が赤・緑なら R・G (置ける場所は 〇)、黒・白なら ●・○ (置ける場所は △) で
 表示します。●○△ は日本語設定の Tera Term などで全角幅になる記号で、半角幅で表示される端末では
 マス目がずれます (Tera Term では Ambiguous width (曖昧幅) を 2 にします)。
@@ -367,7 +373,8 @@ RISC_V_fpga/
 │   ├── timer.v               # マシンタイマ / ソフトウェア割り込み (mtime, mtimecmp, msip)
 │   ├── data_memory.v         # データRAM 32KB (BSRAM)
 │   ├── uart_tx.v / uart_rx.v # UART (115200bps)
-│   ├── board_io.v            # LED / ボタンの MMIO
+│   ├── board_io.v            # LED / ボタン / キーボード / VGA の MMIO
+│   ├── vga_board.v           # VGA 640x480: オセロ盤 + 80x30 字のテキスト (vga_font.hex)
 │   ├── blinky.v              # LED点滅テスト (Phase 1)
 │   └── uart_*.s / uart_*.hex # 手書きアセンブリのテストプログラム
 ├── sim/                      # テストベンチ (23本, tb_*.v)

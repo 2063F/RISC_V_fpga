@@ -74,6 +74,12 @@ module fpga_top #(
     wire        mmio_led_ctrl;
     wire [63:0] led_green_bitmap;
     wire [63:0] led_red_bitmap;
+    wire [63:0] vga_hint_bitmap;
+    wire        vga_show_board;
+    wire [6:0]  vga_last_move;
+    wire        vga_text_we;
+    wire [11:0] vga_text_waddr;
+    wire [7:0]  vga_text_wdata;
     wire        usbkey_valid;
     wire [5:0]  usbkey_index;
     wire        usbkey_connected;
@@ -113,7 +119,13 @@ module fpga_top #(
         .led_ctrl   (mmio_led_ctrl),
         .kbd_row    (kbd_row),
         .led_green_bitmap (led_green_bitmap),
-        .led_red_bitmap   (led_red_bitmap)
+        .led_red_bitmap   (led_red_bitmap),
+        .vga_hint_bitmap  (vga_hint_bitmap),
+        .vga_show_board   (vga_show_board),
+        .vga_last_move    (vga_last_move),
+        .vga_text_we      (vga_text_we),
+        .vga_text_waddr   (vga_text_waddr),
+        .vga_text_wdata   (vga_text_wdata)
     );
 
     // The LED matrix is mounted upside down relative to the board, so show
@@ -146,6 +158,12 @@ module fpga_top #(
         .rst_n         (cpu_rst_n),
         .black_bitmap  (led_green_bitmap),
         .white_bitmap  (led_red_bitmap),
+        .hint_bitmap   (vga_hint_bitmap),
+        .last_move     (vga_last_move),
+        .show_board    (vga_show_board),
+        .text_we       (vga_text_we),
+        .text_waddr    (vga_text_waddr),
+        .text_wdata    (vga_text_wdata),
         .vga_r         (vga_r),
         .vga_g         (vga_g),
         .vga_b         (vga_b),
