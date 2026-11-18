@@ -127,13 +127,6 @@ static const char *side_name(int is_black)
     return is_black ? "Red" : "Green";
 }
 
-static char side_char(int is_black)
-{
-    if (black_white)
-        return is_black ? 'B' : 'W';
-    return is_black ? 'R' : 'G';
-}
-
 // Random numbers for levels 1-3. There is no timer, so entropy comes from
 // how long the player takes to press each key (see wait_key_press). The state
 // lives in .noinit so it also carries over across resets.
@@ -536,7 +529,7 @@ int main(void)
             // Show the player's legal moves; none while the AI is to move
             int human_turn = two_players || (current_is_black == human_black);
             Bitboard hints = human_turn ? moves : 0;
-            print_board(black, white, hints, side_char(1), side_char(0));
+            print_board(black, white, hints, side_name(1), side_name(0));
             update_led_matrix(black, white);
             print_score(black, white);
 
@@ -587,7 +580,7 @@ int main(void)
             current_is_black = !current_is_black;
         }
 
-        print_board(black, white, 0, side_char(1), side_char(0));
+        print_board(black, white, 0, side_name(1), side_name(0));
         update_led_matrix(black, white);
         print_result(black, white);
     }

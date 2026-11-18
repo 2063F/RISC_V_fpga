@@ -89,25 +89,28 @@ void square_to_str(int sq, char *out) {
     out[2] = '\0';
 }
 
+/* UTF-8 の記号。日本語の端末 (Tera Term など) では全角、つまり 2 桁ぶんで
+   表示されるので、後ろに空白は付けない。空きマスは半角の「. 」で 2 桁 */
+#define SYM_BLACK "\xE2\x97\x8F"     /* U+25CF ● */
+#define SYM_WHITE "\xE2\x97\x8B"     /* U+25CB ○ */
+#define SYM_HINT  "\xE2\x96\xB3"     /* U+25B3 △ */
+
 void print_board(Bitboard black, Bitboard white, Bitboard hints,
-                 char black_ch, char white_ch) {
+                 const char *black_name, const char *white_name) {
     for (int r = 0; r < 8; r++) {
         printf("%d ", r + 1);
         for (int c = 0; c < 8; c++) {
-            int sq = sq_of(c, r);
-            Bitboard bit = 1ULL << sq;
-            if (hints & bit) {
-                /* 全角(UTF-8)の〇は端末上で2桁ぶんなので、後ろの空白は付けない */
-                uart_print("\xE3\x80\x87"); /* U+3007 〇 */
-                continue;
-            }
-            char ch = '.';
-            if (black & bit) ch = black_ch;
-            else if (white & bit) ch = white_ch;
-            uart_putchar(ch);
-            uart_putchar(' ');
+            Bitboard bit = 1ULL << sq_of(c, r);
+            if (black & bit)      uart_print(SYM_BLACK);
+            else if (white & bit) uart_print(SYM_WHITE);
+            else if (hints & bit) uart_print(SYM_HINT);
+            else                  uart_print(". ");
         }
         uart_print("\n");
     }
     uart_print("  a b c d e f g h\n");
+    printf(SYM_BLACK " %s  " SYM_WHITE " %s", black_name, white_name);
+    if (hints)
+        uart_print("  " SYM_HINT " can play");
+    uart_print("\n");
 }
