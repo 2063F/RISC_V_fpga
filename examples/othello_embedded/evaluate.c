@@ -1,5 +1,5 @@
 #include "evaluate.h"
-#include "eval_weights.h"
+#include "eval_weights_int.h"
 
 /* 隅 a1,h1,a8,h8 */
 #define CORNER_MASK 0x8100000000000081ULL
@@ -87,16 +87,18 @@ Features extract_features(Bitboard black, Bitboard white, int player_is_black) {
     return f;
 }
 
-double evaluate_position(Bitboard black, Bitboard white, int player_is_black) {
+int evaluate_position(Bitboard black, Bitboard white, int player_is_black) {
     int empty_count = 64 - popcount(black) - popcount(white);
     int phase = empty_count;
     if (phase < 0) phase = 0;
     if (phase >= EVAL_N_PHASE) phase = EVAL_N_PHASE - 1;
 
     Features f = extract_features(black, white, player_is_black);
-    const double *w = EVAL_WEIGHTS[phase];
+    /* 整数で計算する: この CPU に浮動小数点は無く、double はソフトウェアで
+       計算されて評価全体の 1/4 を占めていた */
+    const int16_t *w = EVAL_WEIGHTS_INT[phase];
 
-    double v = w[0];
+    int v = w[0];
     v += w[1] * f.stone_diff;
     v += w[2] * f.mobility_diff;
     v += w[3] * f.corner_diff;

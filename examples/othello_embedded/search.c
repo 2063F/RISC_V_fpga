@@ -1,6 +1,7 @@
 #include "othello.h"
 #include "evaluate.h"
 #include "search.h"
+#include "eval_weights_int.h"   /* EVAL_SCALE */
 
 /*
  * 2 ハートでの並列探索 (YBW: Young Brothers Wait)
@@ -27,8 +28,8 @@
 
 #define MAX_KILLER_DEPTH 64
 #define SEARCH_HARTS 2
-#define INF 1e18
-#define EPS 1e-6    /* PVS の null window の幅 */
+#define INF (1 << 29)
+#define EPS 1       /* PVS の null window の幅 (評価値は整数) */
 #define SPLIT_MIN_DEPTH 2   /* これより浅いノードは分けても割に合わない */
 
 /* ハートごとの探索状態。キラームーブ表: 各深さで直近にβカットを起こした手を
@@ -59,7 +60,7 @@ static __attribute__((noinline)) int order_moves(const SearchCtx *c, Bitboard bl
                        Bitboard moves, int depth, signed char *sqs) {
     Bitboard P = player_is_black ? black : white;
     Bitboard O = player_is_black ? white : black;
-    double order_score[64];
+    int order_score[64];
     int n = 0;
     Bitboard m = moves;
     while (m) {
@@ -70,9 +71,9 @@ static __attribute__((noinline)) int order_moves(const SearchCtx *c, Bitboard bl
         apply_move(P, O, sq, &nb, &nw);
         Bitboard newblack = player_is_black ? nb : nw;
         Bitboard newwhite = player_is_black ? nw : nb;
-        double sc = -evaluate_position(newblack, newwhite, !player_is_black);
-        if (sq == c->killer[depth][0]) sc += 5e5;       /* キラームーブ1番手 */
-        else if (sq == c->killer[depth][1]) sc += 4e5;  /* キラームーブ2番手 */
+        int sc = -evaluate_position(newblack, newwhite, !player_is_black);
+        if (sq == c->killer[depth][0]) sc += 1 << 22;       /* キラームーブ1番手 */
+        else if (sq == c->killer[depth][1]) sc += 1 << 21;  /* キラームーブ2番手 */
         order_score[n] = sc;
         n++;
     }
@@ -82,7 +83,28 @@ static __attribute__((noinline)) int order_moves(const SearchCtx *c, Bitboard bl
         for (int j = i + 1; j < n; j++) if (order_score[j] > order_score[best]) best = j;
         if (best != i) {
             signed char ts = sqs[i]; sqs[i] = sqs[best]; sqs[best] = ts;
-            double td = order_score[i]; order_score[i] = order_score[best]; order_score[best] = td;
+            int td = order_score[i]; order_score[i] = order_score[best]; order_score[best] = td;
+        }
+    }
+    return n;
+}
+
+/* 末端の 1 つ手前 (残り深さ 1) のノード用の安い並べ方: 盤の順に並べ、
+   キラームーブだけ前に出す。評価値で並べると子をすべて評価することになり、
+   子はその直後にもう一度評価されるので、並べ替えの分がまるごと無駄になる */
+static int list_moves(const SearchCtx *c, Bitboard moves, int depth, signed char *sqs) {
+    int n = 0;
+    for (Bitboard m = moves; m; m &= m - 1)
+        sqs[n++] = (signed char)ctz64(m);
+    int front = 0;
+    for (int k = 0; k < 2; k++) {
+        int km = c->killer[depth][k];
+        for (int i = front; i < n; i++) {
+            if (sqs[i] == km) {
+                signed char t = sqs[front]; sqs[front] = sqs[i]; sqs[i] = t;
+                front++;
+                break;
+            }
         }
     }
     return n;
@@ -101,9 +123,9 @@ static void play(Bitboard black, Bitboard white, int player_is_black, int sq,
     }
 }
 
-static double split(Bitboard black, Bitboard white, int player_is_black, int depth,
-                    double alpha, double beta, const signed char *sqs, int n,
-                    double first_val, int root, int *out_move);
+static int split(Bitboard black, Bitboard white, int player_is_black, int depth,
+                    int alpha, int beta, const signed char *sqs, int n,
+                    int first_val, int root, int *out_move);
 
 static int job_active;      /* ハート 0 だけが読み書きする */
 static int hart1_ready;     /* search_hart_main が動いていれば 1 */
@@ -132,12 +154,12 @@ static int time_up(void) {
  * キラームーブだけでも実用的な枝刈りが得られ、RAMもほぼ使わない。
  * c == &ctx[0] (ハート 0) で can_split なら、PV ノードでハート 1 と手分けする。
  */
-static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_is_black,
-                      int depth, double alpha, double beta, int can_split, int root,
+static int negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_is_black,
+                   int depth, int alpha, int beta, int can_split, int root,
                       int *out_move) {
-    if (__atomic_load_n(&search_stop, __ATOMIC_RELAXED)) return 0.0;
+    if (__atomic_load_n(&search_stop, __ATOMIC_RELAXED)) return 0;
     c->nodes++;
-    if ((c->nodes & 15) == 0 && time_up()) return 0.0;
+    if ((c->nodes & 15) == 0 && time_up()) return 0;
 
     Bitboard P = player_is_black ? black : white;
     Bitboard O = player_is_black ? white : black;
@@ -150,9 +172,9 @@ static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_i
             int own = player_is_black ? b : w;
             int opp = player_is_black ? w : b;
             if (out_move) *out_move = -1;
-            return (double)(own - opp);
+            return (own - opp) * EVAL_SCALE;
         }
-        double v = -negamax(c, black, white, !player_is_black, depth, -beta, -alpha,
+        int v = -negamax(c, black, white, !player_is_black, depth, -beta, -alpha,
                             can_split, 0, 0);
         if (out_move) *out_move = -1;
         return v;
@@ -164,15 +186,17 @@ static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_i
     }
 
     signed char sqs[64];    /* 1 バイトずつ: 深く読むときのスタックを節約する */
-    int n = order_moves(c, black, white, player_is_black, moves, depth, sqs);
+    int n = (depth == 1 && !root)
+          ? list_moves(c, moves, depth, sqs)
+          : order_moves(c, black, white, player_is_black, moves, depth, sqs);
 
-    double best_val = -INF;
+    int best_val = -INF;
     int best_move = sqs[0];
 
     for (int i = 0; i < n; i++) {
         Bitboard newblack, newwhite;
         play(black, white, player_is_black, sqs[i], &newblack, &newwhite);
-        double v;
+        int v;
 
         if (i == 0) {
             /* 最初の手は PV。その先でも手分けできる */
@@ -214,13 +238,13 @@ static struct {
     Bitboard black, white;
     int player_is_black;
     int depth;
-    double alpha0, beta;    /* ノードに来たときの窓 */
+    int alpha0, beta;       /* ノードに来たときの窓 */
     int root;               /* ルートなら 1 (同点の扱い) */
     int n;
     const signed char *sqs; /* 並べた手 (ハート 0 のスタック上。RAM は共有) */
     int next;               /* 次に読む手の番号 (AMO で取り合う) */
     unsigned lock;          /* best_val / best_idx を守る */
-    double best_val;
+    int best_val;
     int best_idx;
     int busy;               /* 作業中のハート 1 の数 */
     unsigned gen;           /* 新しい分割点ごとに増える。ハート 1 はこれを待つ */
@@ -257,7 +281,7 @@ static void split_worker(SearchCtx *c) {
         if (i >= job.n || __atomic_load_n(&search_stop, __ATOMIC_RELAXED)) break;
 
         job_lock();
-        double alpha = job.best_val > job.alpha0 ? job.best_val : job.alpha0;
+        int alpha = job.best_val > job.alpha0 ? job.best_val : job.alpha0;
         int best_idx = job.best_idx;
         job_unlock();
         if (alpha >= job.beta) break;   /* β カット済み */
@@ -266,7 +290,7 @@ static void split_worker(SearchCtx *c) {
 
         Bitboard newblack, newwhite;
         play(job.black, job.white, job.player_is_black, job.sqs[i], &newblack, &newwhite);
-        double v = -negamax(c, newblack, newwhite, !job.player_is_black, job.depth - 1,
+        int v = -negamax(c, newblack, newwhite, !job.player_is_black, job.depth - 1,
                             -(alpha + EPS), -alpha, 0, 0, 0);
         if (v > alpha && v < job.beta) {
             v = -negamax(c, newblack, newwhite, !job.player_is_black, job.depth - 1,
@@ -292,9 +316,9 @@ static void split_worker(SearchCtx *c) {
 }
 
 /* PV ノードの 1 番目以降の手をハート 1 と手分けして読む (ハート 0 から呼ぶ) */
-static double split(Bitboard black, Bitboard white, int player_is_black, int depth,
-                    double alpha, double beta, const signed char *sqs, int n,
-                    double first_val, int root, int *out_move) {
+static int split(Bitboard black, Bitboard white, int player_is_black, int depth,
+                    int alpha, int beta, const signed char *sqs, int n,
+                    int first_val, int root, int *out_move) {
     job.black = black;
     job.white = white;
     job.player_is_black = player_is_black;
@@ -353,7 +377,7 @@ SearchResult find_best_move(Bitboard black, Bitboard white, int player_is_black,
     if (depth >= MAX_KILLER_DEPTH) depth = MAX_KILLER_DEPTH - 1;
 
     int move = -1;
-    double val = negamax(&ctx[0], black, white, player_is_black, depth, -INF, INF,
+    int val = negamax(&ctx[0], black, white, player_is_black, depth, -INF, INF,
                          harts >= 2, 1, &move);
 
     SearchResult result;
@@ -379,7 +403,7 @@ SearchResult find_best_move_timed(Bitboard black, Bitboard white, int player_is_
 
     SearchResult best;
     best.square = -1;
-    best.score = 0.0;
+    best.score = 0;
     best.depth_reached = 0;
     best.partial = 0;
 
@@ -391,7 +415,7 @@ SearchResult find_best_move_timed(Bitboard black, Bitboard white, int player_is_
         root_first_done = 0;
         time_check = (d > 1);           /* 深さ 1 は必ず読み切る */
         int move = -1;
-        double v = negamax(&ctx[0], black, white, player_is_black, d, -INF, INF,
+        int v = negamax(&ctx[0], black, white, player_is_black, d, -INF, INF,
                            harts >= 2, 1, &move);
         if (search_stop) {
             /* 時間切れ。最初の手 (前の深さの最善手) を読み終えていれば、
@@ -428,7 +452,7 @@ SearchResult find_weak_move(Bitboard black, Bitboard white, int player_is_black,
     int avoid_corners = (pick == PICK_WORST);
 
     int sqs[64];
-    double score[64];
+    int score[64];
     int n = 0;
     Bitboard m = moves;
     while (m) {
@@ -438,8 +462,8 @@ SearchResult find_weak_move(Bitboard black, Bitboard white, int player_is_black,
         apply_move(P, O, sq, &nb, &nw);
         Bitboard newblack = player_is_black ? nb : nw;
         Bitboard newwhite = player_is_black ? nw : nb;
-        double sc = -evaluate_position(newblack, newwhite, !player_is_black);
-        if (avoid_corners && ((CORNER_SQUARES >> sq) & 1u)) sc += 1e9; /* 角は最後の手段 */
+        int sc = -evaluate_position(newblack, newwhite, !player_is_black);
+        if (avoid_corners && ((CORNER_SQUARES >> sq) & 1u)) sc += 1 << 28; /* 角は最後の手段 */
         sqs[n] = sq;
         score[n] = sc;
         n++;
@@ -451,13 +475,13 @@ SearchResult find_weak_move(Bitboard black, Bitboard white, int player_is_black,
         for (int j = i + 1; j < n; j++) if (score[j] < score[worst]) worst = j;
         if (worst != i) {
             int ts = sqs[i]; sqs[i] = sqs[worst]; sqs[worst] = ts;
-            double td = score[i]; score[i] = score[worst]; score[worst] = td;
+            int td = score[i]; score[i] = score[worst]; score[worst] = td;
         }
     }
 
     SearchResult result;
     result.square = -1;
-    result.score = 0.0;
+    result.score = 0;
     result.nodes = n;
     result.depth_reached = 1;
     result.partial = 0;

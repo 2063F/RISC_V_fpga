@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
             time1 += b - a; time2 += c - b;
             if (r1.square != r2.square || r1.score != r2.score) {
                 mismatches++;
-                printf("MISMATCH game %d: 1 hart %d (%.6f), 2 harts %d (%.6f)\n",
+                printf("MISMATCH game %d: 1 hart %d (%d), 2 harts %d (%d)\n",
                        g, r1.square, r1.score, r2.square, r2.score);
             }
             if (timed) {
@@ -77,8 +77,8 @@ int main(int argc, char **argv) {
                 if (t1.score != r1.score || t2.score != r1.score || t1.square < 0 ||
                     t2.square < 0) {
                     mismatches++;
-                    printf("TIMED MISMATCH game %d: fixed %.6f, timed 1 hart %.6f (d%d), "
-                           "2 harts %.6f (d%d)\n", g, r1.score, t1.score, t1.depth_reached,
+                    printf("TIMED MISMATCH game %d: fixed %d, timed 1 hart %d (d%d), "
+                           "2 harts %d (d%d)\n", g, r1.score, t1.score, t1.depth_reached,
                            t2.score, t2.depth_reached);
                 }
             }

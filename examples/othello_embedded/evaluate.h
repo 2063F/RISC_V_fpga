@@ -20,8 +20,9 @@ typedef struct {
    手番側から見た8種類の評価変数を計算する。 */
 Features extract_features(Bitboard black, Bitboard white, int player_is_black);
 
-/* 学習済みの重み(eval_weights.h)を使って局面を評価する。
-   値が大きいほど手番側に有利。empty_countが範囲外の場合は端の値で代用する。 */
-double evaluate_position(Bitboard black, Bitboard white, int player_is_black);
+/* 学習済みの重み(eval_weights.h を整数にした eval_weights_int.h)を使って
+   局面を評価する。値は石差の EVAL_SCALE (1024) 倍の整数で、大きいほど
+   手番側に有利。empty_countが範囲外の場合は端の値で代用する。 */
+int evaluate_position(Bitboard black, Bitboard white, int player_is_black);
 
 #endif

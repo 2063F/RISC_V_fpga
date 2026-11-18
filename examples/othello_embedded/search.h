@@ -5,7 +5,7 @@
 
 typedef struct {
     int square;        /* 選んだ手のマス番号。-1 はパス（合法手が無い場合） */
-    double score;      /* 手番側から見た評価値（中盤=評価関数値、終盤=確定石差） */
+    int score;         /* 手番側から見た評価値 (石差の EVAL_SCALE = 1024 倍。中盤=評価関数値、終盤=確定石差) */
     long nodes;         /* 探索したノード数（デバッグ・速度確認用） */
     int depth_reached;  /* 実際に探索した深さ */
     int partial;        /* 持ち時間制で、時間切れの深さ depth_reached + 1 の途中の結果なら 1 */

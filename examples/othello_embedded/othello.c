@@ -28,18 +28,40 @@ Bitboard shift_dir(Bitboard bb, int d) {
     }
 }
 
+/* 1 方向ぶんの合法手。シフト量を定数にして (インライン展開される)、
+   列をまたぐ方向では相手の石を b-g 列に限ることで回り込みを防ぐ:
+   連続する相手の石が a 列や h 列を通ることはないので、端で折り返した
+   ビットは途中で消える。可変のシフト量で 64 ビットを動かすと RV32 では
+   分岐だらけになり、評価関数の中で一番重かった */
+#define INNER_COLS 0x7E7E7E7E7E7E7E7EULL
+
+static inline Bitboard moves_up(Bitboard P, Bitboard mO, Bitboard empty, int s) {
+    Bitboard x = (P << s) & mO;
+    x |= (x << s) & mO;
+    x |= (x << s) & mO;
+    x |= (x << s) & mO;
+    x |= (x << s) & mO;
+    x |= (x << s) & mO;
+    return (x << s) & empty;
+}
+
+static inline Bitboard moves_down(Bitboard P, Bitboard mO, Bitboard empty, int s) {
+    Bitboard x = (P >> s) & mO;
+    x |= (x >> s) & mO;
+    x |= (x >> s) & mO;
+    x |= (x >> s) & mO;
+    x |= (x >> s) & mO;
+    x |= (x >> s) & mO;
+    return (x >> s) & empty;
+}
+
 Bitboard get_moves(Bitboard P, Bitboard O) {
     Bitboard empty = ~(P | O);
-    Bitboard moves = 0;
-    for (int i = 0; i < 8; i++) {
-        int d = DIRS[i];
-        Bitboard x = shift_dir(P, d) & O;
-        for (int k = 0; k < 5; k++) {
-            x |= shift_dir(x, d) & O;
-        }
-        moves |= shift_dir(x, d) & empty;
-    }
-    return moves;
+    Bitboard inner = O & INNER_COLS;
+    return moves_up(P, O, empty, 8)     | moves_down(P, O, empty, 8)        /* 縦 */
+         | moves_up(P, inner, empty, 1) | moves_down(P, inner, empty, 1)    /* 横 */
+         | moves_up(P, inner, empty, 9) | moves_down(P, inner, empty, 9)    /* 斜め */
+         | moves_up(P, inner, empty, 7) | moves_down(P, inner, empty, 7);
 }
 
 void apply_move(Bitboard P, Bitboard O, int sq, Bitboard *newP, Bitboard *newO) {
