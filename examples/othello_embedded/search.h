@@ -8,6 +8,7 @@ typedef struct {
     double score;      /* 手番側から見た評価値（中盤=評価関数値、終盤=確定石差） */
     long nodes;         /* 探索したノード数（デバッグ・速度確認用） */
     int depth_reached;  /* 実際に探索した深さ */
+    int partial;        /* 持ち時間制で、時間切れの深さ depth_reached + 1 の途中の結果なら 1 */
 } SearchResult;
 
 /*
@@ -34,10 +35,11 @@ void search_hart_main(void);
 /*
  * 持ち時間制の探索 (反復深化)。深さ 1, 2, ... と読み、time_us マイクロ秒を
  * 過ぎたら打ち切って、読み切った最後の深さの最善手を返す
- * (depth_reached がその深さ)。終局まで読み切ったとき、max_depth に
- * 達したとき、持ち時間の 1/3 を使ったとき (次の深さは間に合わない) にも
- * そこで止める。深さ 1 は時間に関係なく読み切る。前の深さの最善手を
- * 次の深さで最初に読む。
+ * (depth_reached がその深さ)。前の深さの最善手を次の深さで最初に読み、
+ * 時間切れの深さでもその手を読み終えていれば、読み終えた手の中の最善手を
+ * 返す (partial = 1。前の深さより良い手が見つかっていればその手になる)。
+ * 終局まで読み切ったとき、max_depth に達したとき、持ち時間の半分を
+ * 使ったときにもそこで止める。深さ 1 は時間に関係なく読み切る。
  */
 SearchResult find_best_move_timed(Bitboard black, Bitboard white, int player_is_black,
                                    uint32_t time_us, int max_depth, int harts);

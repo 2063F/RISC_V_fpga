@@ -25,8 +25,9 @@
 //   4 Hard   - alpha-beta search, depth 2.
 //   5 Expert - iterative deepening on both harts, within the time per move
 //              chosen in the menu (key 10): depth 1, 2, 3, ... until the time
-//              is up, then the best move of the deepest finished depth. Near
-//              the end it reads to the end of the game.
+//              is up, then the best move of the deepest finished depth, or
+//              of the moves already read at the next depth ("depth 5+").
+//              Near the end it reads to the end of the game.
 //   6 Expert, 1 hart - the same on hart 0 alone, to compare the depth reached.
 // After reset: level 1, you move first, Red / Green, 3 s per move.
 //
@@ -575,8 +576,9 @@ int main(void)
                     white = current_is_black ? newO : newP;
                     char buf[3];
                     square_to_str(res.square, buf);
-                    printf("AI played %s (depth %d, nodes=%d, %d.%d%d%d s)\n", buf,
-                           res.depth_reached, (int)res.nodes,
+                    // "depth 5+": depth 5 finished, and part of depth 6 read
+                    printf("AI played %s (depth %d%s, nodes=%d, %d.%d%d%d s)\n", buf,
+                           res.depth_reached, res.partial ? "+" : "", (int)res.nodes,
                            (int)(ms / 1000u), (int)(ms / 100u % 10u), (int)(ms / 10u % 10u),
                            (int)(ms % 10u));
                 }

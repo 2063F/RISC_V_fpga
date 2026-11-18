@@ -115,6 +115,7 @@ static int hart1_ready;     /* search_hart_main が動いていれば 1 */
  */
 static int search_stop;
 static int time_check;      /* 時計を見るか (探索の前にハート 0 が決める) */
+static int root_first_done; /* ルートの最初の手を読み終えた (時間切れの深さの途中結果に使う) */
 static uint32_t deadline;   /* search_time_us() の期限 */
 
 static int time_up(void) {
@@ -177,6 +178,8 @@ static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_i
             /* 最初の手は PV。その先でも手分けできる */
             v = -negamax(c, newblack, newwhite, !player_is_black, depth - 1, -beta, -alpha,
                          can_split, 0, 0);
+            if (__atomic_load_n(&search_stop, __ATOMIC_RELAXED)) break;
+            if (root) root_first_done = 1;
             if (can_split && n > 1 && depth >= SPLIT_MIN_DEPTH && v < beta && !job_active &&
                 __atomic_load_n(&hart1_ready, __ATOMIC_ACQUIRE)) {
                 return split(black, white, player_is_black, depth, alpha, beta, sqs, n,
@@ -189,6 +192,9 @@ static double negamax(SearchCtx *c, Bitboard black, Bitboard white, int player_i
                 v = -negamax(c, newblack, newwhite, !player_is_black, depth - 1, -beta, -alpha,
                              0, 0, 0);
             }
+            /* 時間切れで途中で返った値は使わない (ルートでは、それまでに
+               読み終えた手の最善が時間切れの深さの途中結果になる) */
+            if (__atomic_load_n(&search_stop, __ATOMIC_RELAXED)) break;
         }
 
         if (v > best_val) { best_val = v; best_move = sqs[i]; }
@@ -266,6 +272,8 @@ static void split_worker(SearchCtx *c) {
             v = -negamax(c, newblack, newwhite, !job.player_is_black, job.depth - 1,
                          -job.beta, -alpha, 0, 0, 0);
         }
+
+        if (__atomic_load_n(&search_stop, __ATOMIC_RELAXED)) break;  /* 途中で返った値 */
 
         /* ルートでは α 以下の値は上限でしかないので、最善手の候補にしない */
         if (!job.root || v > alpha) {
@@ -353,6 +361,7 @@ SearchResult find_best_move(Bitboard black, Bitboard white, int player_is_black,
     result.score = val;
     result.nodes = ctx[0].nodes + ctx[1].nodes;
     result.depth_reached = depth;
+    result.partial = 0;
     return result;
 }
 
@@ -372,24 +381,35 @@ SearchResult find_best_move_timed(Bitboard black, Bitboard white, int player_is_
     best.square = -1;
     best.score = 0.0;
     best.depth_reached = 0;
+    best.partial = 0;
 
     for (int d = 1; d <= max_depth; d++) {
         /* 前の深さの最善手をルートで最初に読む (ルートのキラー表に入れる) */
         if (best.square >= 0) store_killer(&ctx[0], d, best.square);
 
         search_stop = 0;
+        root_first_done = 0;
         time_check = (d > 1);           /* 深さ 1 は必ず読み切る */
         int move = -1;
         double v = negamax(&ctx[0], black, white, player_is_black, d, -INF, INF,
                            harts >= 2, 1, &move);
-        if (search_stop) break;         /* 時間切れ: この深さは捨てる */
+        if (search_stop) {
+            /* 時間切れ。最初の手 (前の深さの最善手) を読み終えていれば、
+               読み終えた手の中の最善はこの深さで最善と分かっている手 */
+            if (root_first_done && move >= 0) {
+                best.square = move;
+                best.score = v;
+                best.partial = 1;
+            }
+            break;
+        }
 
         best.square = move;
         best.score = v;
         best.depth_reached = d;
         if (d >= empty) break;          /* 終局まで読み切った */
-        /* 次の深さは今までの数倍かかる。持ち時間の 1/3 を使ったら打つ */
-        if (search_time_us() - start > time_us / 3u) break;
+        /* 持ち時間の半分を使ったら打つ (次の深さは途中までしか読めず、得るものが少ない) */
+        if (search_time_us() - start > time_us / 2u) break;
     }
     time_check = 0;
     search_stop = 0;
@@ -440,6 +460,7 @@ SearchResult find_weak_move(Bitboard black, Bitboard white, int player_is_black,
     result.score = 0.0;
     result.nodes = n;
     result.depth_reached = 1;
+    result.partial = 0;
     if (n == 0) return result;
 
     /* 候補を [lo, lo+k) に絞り、その中からランダムに選ぶ。
