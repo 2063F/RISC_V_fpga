@@ -66,7 +66,8 @@ module tb_othello_menu;
             end
             #(BIT_NS + BIT_HALF_NS);
             $write("%c", data);
-            tail = {tail[8*47-1:0], data};
+            if (data != 8'h0D)               // uart.h sends "\r\n"; match on "\n" alone
+                tail = {tail[8*47-1:0], data};
             -> got_char;
         end
     end
