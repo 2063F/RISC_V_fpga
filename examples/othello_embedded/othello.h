@@ -72,10 +72,10 @@ static inline int row_of(int sq) { return sq / 8; }
 /* マス番号 -> "f5" のような2文字表記（out は3バイト以上確保すること） */
 void square_to_str(int sq, char *out);
 
-/* 盤面をUARTにテキスト表示する (要 uart.h)。黒石は ●、白石は ○、
-   hints のマス（合法手）は △ で示す (hints が不要なら 0 を渡す)。
-   最後に「● black_name  ○ white_name」の凡例を付ける */
-void print_board(Bitboard black, Bitboard white, Bitboard hints,
-                 const char *black_name, const char *white_name);
+/* 盤面をUARTにテキスト表示する (要 uart.h)。hints のマス（合法手）にも
+   印を付ける (不要なら 0 を渡す)。
+   symbols = 0: 黒石 R・白石 G・合法手 〇 (赤 / 緑で呼ぶとき)
+   symbols = 1: 黒石 ●・白石 ○・合法手 △ と、その凡例 (黒 / 白で呼ぶとき) */
+void print_board(Bitboard black, Bitboard white, Bitboard hints, int symbols);
 
 #endif

@@ -94,23 +94,25 @@ void square_to_str(int sq, char *out) {
 #define SYM_BLACK "\xE2\x97\x8F"     /* U+25CF ● */
 #define SYM_WHITE "\xE2\x97\x8B"     /* U+25CB ○ */
 #define SYM_HINT  "\xE2\x96\xB3"     /* U+25B3 △ */
+#define SYM_HINT0 "\xE3\x80\x87"     /* U+3007 〇 */
 
-void print_board(Bitboard black, Bitboard white, Bitboard hints,
-                 const char *black_name, const char *white_name) {
+void print_board(Bitboard black, Bitboard white, Bitboard hints, int symbols) {
     for (int r = 0; r < 8; r++) {
         printf("%d ", r + 1);
         for (int c = 0; c < 8; c++) {
             Bitboard bit = 1ULL << sq_of(c, r);
-            if (black & bit)      uart_print(SYM_BLACK);
-            else if (white & bit) uart_print(SYM_WHITE);
-            else if (hints & bit) uart_print(SYM_HINT);
+            if (black & bit)      uart_print(symbols ? SYM_BLACK : "R ");
+            else if (white & bit) uart_print(symbols ? SYM_WHITE : "G ");
+            else if (hints & bit) uart_print(symbols ? SYM_HINT : SYM_HINT0);
             else                  uart_print(". ");
         }
         uart_print("\n");
     }
     uart_print("  a b c d e f g h\n");
-    printf(SYM_BLACK " %s  " SYM_WHITE " %s", black_name, white_name);
-    if (hints)
-        uart_print("  " SYM_HINT " can play");
-    uart_print("\n");
+    if (symbols) {
+        uart_print(SYM_BLACK " Black  " SYM_WHITE " White");
+        if (hints)
+            uart_print("  " SYM_HINT " can play");
+        uart_print("\n");
+    }
 }

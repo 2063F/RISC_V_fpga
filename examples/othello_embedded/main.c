@@ -529,7 +529,7 @@ int main(void)
             // Show the player's legal moves; none while the AI is to move
             int human_turn = two_players || (current_is_black == human_black);
             Bitboard hints = human_turn ? moves : 0;
-            print_board(black, white, hints, side_name(1), side_name(0));
+            print_board(black, white, hints, black_white);
             update_led_matrix(black, white);
             print_score(black, white);
 
@@ -580,7 +580,7 @@ int main(void)
             current_is_black = !current_is_black;
         }
 
-        print_board(black, white, 0, side_name(1), side_name(0));
+        print_board(black, white, 0, black_white);
         update_led_matrix(black, white);
         print_result(black, white);
     }
