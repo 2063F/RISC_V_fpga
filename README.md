@@ -291,6 +291,21 @@ AI 対戦の勝敗はレベルごとに集計され、リセットしても電�
 
 選ぶ手は `double` 版と 1 万局面で 100% 一致し、強さは変わりません。
 
+#### PC 版 (`othello_ai_c/othello_AI/othello.exe`)
+
+同じエンジン (`othello.c` / `evaluate.c` / `search.c`) と同じ遊び方を Windows の
+ウィンドウで遊べます (`examples/othello_embedded/othello_win32.c`)。ダブルクリックで
+起動し、追加のインストールは要りません。
+
+- 対戦: レベル 1-6 (FPGA 版と同じ) / 二人対戦、先手・後手、色 (赤・緑 / 黒・白)、
+  持ち時間 1・3・10・30・50 秒 (レベル 5, 6)
+- 置ける場所は黄色の点、直前の手は点 (赤・緑では白、黒・白では赤) で示し、
+  AI の手の深さ・ノード数・時間・評価値を表示
+- ハート 1 の代わりにスレッドを 1 本使います (レベル 4, 5 は 2 スレッド)。
+  PC は速いので、同じ持ち時間でも FPGA 版よりずっと深く読みます
+
+作り直すには `othello_ai_c/othello_AI/build.bat` を実行します (MinGW-w64 の gcc)。
+
 ### オセロ AI の並列探索
 
 `examples/othello_embedded` のオセロ AI は、レベル 4 (Hard) と 5 (Expert) の探索を

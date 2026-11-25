@@ -346,6 +346,17 @@ static int split(Bitboard black, Bitboard white, int player_is_black, int depth,
     return job.best_val;
 }
 
+/*
+ * ハート 1 の待ちループ。PC 版 (othello_win32.c) は SEARCH_HART_IDLE に
+ * 関数名を定義して、探索していない間はスレッドを眠らせる (CPU を使い続けない)。
+ */
+#ifdef SEARCH_HART_IDLE
+void SEARCH_HART_IDLE(void);
+#define hart_idle() SEARCH_HART_IDLE()
+#else
+#define hart_idle() spin_pause()
+#endif
+
 void search_hart_main(void) {
     unsigned seen = __atomic_load_n(&job.gen, __ATOMIC_ACQUIRE);
     unsigned search = job.search_id - 1u;
@@ -353,7 +364,7 @@ void search_hart_main(void) {
     for (;;) {
         unsigned g;
         while ((g = __atomic_load_n(&job.gen, __ATOMIC_ACQUIRE)) == seen)
-            spin_pause();
+            hart_idle();
         seen = g;
         if (job.search_id != search) {  /* 新しい探索: キラー表を消す */
             search = job.search_id;

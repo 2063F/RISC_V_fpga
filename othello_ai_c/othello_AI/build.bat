@@ -20,7 +20,9 @@ if errorlevel 1 goto :error
 gcc -O2 -Wall -Wextra -std=c11 -o engine_cli.exe engine_cli.c othello.c evaluate.c search.c
 if errorlevel 1 goto :error
 
-gcc -O2 -Wall -Wextra -std=c11 -mwindows -o othello.exe othello_win32.c othello.c evaluate.c search.c
+REM othello.exe は FPGA 版と同じエンジン・遊び方 (examples\othello_embedded) で作る
+set EMB=..\..\examples\othello_embedded
+gcc -O2 -Wall -Wextra -std=c11 -mwindows -static -I ..\..\examples -DSEARCH_HART_IDLE=search_hart_idle -o othello.exe %EMB%\othello_win32.c %EMB%\othello.c %EMB%\evaluate.c %EMB%\search.c
 if errorlevel 1 goto :error
 
 echo.
