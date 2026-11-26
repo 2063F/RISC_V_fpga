@@ -8,6 +8,7 @@
  *   - 対戦: AI レベル 1-6 (FPGA 版と同じ) または 二人対戦
  *   - 先手 / 後手、持ち時間 (レベル 5, 6)。石は黒・白 (FPGA 版の赤・緑の呼び名はない)
  *   - 置ける場所 (黄色の点)、直前の手 (赤い点)、AI の読んだ深さと時間
+ *   - 起動してからの AI 戦の成績 (レベルごとの対戦数・勝ち・負け・引き分け・勝率)
  *   - ハート 1 の代わりにスレッドを 1 本使い、レベル 4, 5 は 2 スレッドで読む
  *
  * ビルド (MinGW-w64, リポジトリのルートで):
@@ -63,7 +64,8 @@ static const int think_choices[] = { 1, 3, 10, 30, 50 };
 #define ROW2_Y 44
 #define STATUS_Y 80
 #define INFO_Y 104
-#define BOARD_Y 132
+#define STATS_Y 128
+#define BOARD_Y 156
 #define KIFU_Y (BOARD_Y + BOARD_SIZE + 14)
 #define CLIENT_W (BOARD_X * 2 + BOARD_SIZE)
 #define CLIENT_H (KIFU_Y + 44)
@@ -73,13 +75,14 @@ static const int think_choices[] = { 1, 3, 10, 30, 50 };
 #define ID_COMBO_THINK 104
 #define ID_BTN_NEWGAME 105
 #define ID_BTN_COPY 106
+#define ID_BTN_STATS 107
 
 #define WM_APP_AI_DONE (WM_APP + 1)
 
 /* ---- 設定と対局の状態 ---- */
 static HINSTANCE g_hInst;
 static HFONT g_hFont;
-static HWND g_hwnd, g_hMode, g_hOrder, g_hThink, g_hNew, g_hStatus, g_hInfo, g_hKifu;
+static HWND g_hwnd, g_hMode, g_hOrder, g_hThink, g_hNew, g_hStatus, g_hInfo, g_hStats, g_hKifu;
 
 static int g_mode = 0;          /* 0-5: AI レベル、MODE_TWO_PLAYERS: 二人対戦 */
 static int g_human_black = 1;   /* AI 戦: 1 = あなたが先手 */
@@ -92,6 +95,10 @@ static int g_last_move = -1;
 static int g_thinking;          /* AI のスレッドが読んでいる */
 static char g_pass_note[64];    /* 直前のパス */
 static char g_kifu_moves[200];
+
+/* 起動してからの AI 戦の成績 (あなたから見て。二人対戦と途中でやめた対局は数えない) */
+typedef struct { int wins, losses, draws; } Stats;
+static Stats g_stats[LEVEL_COUNT];
 
 /* AI のスレッドに渡すもの / 返すもの */
 static SearchResult g_ai_result;
@@ -335,6 +342,53 @@ static void PlayMove(int sq) {
     g_current_is_black = !g_current_is_black;
 }
 
+/* "3戦 2勝 1敗 0分 勝率 66.7%" (引き分けは勝ちに数えない) */
+static void FormatStats(char *out, size_t cap, const Stats *st) {
+    int games = st->wins + st->losses + st->draws;
+    int rate10 = games ? (st->wins * 1000 + games / 2) / games : 0;
+    snprintf(out, cap, "%d戦 %d勝 %d敗 %d分 勝率 %d.%d%%", games, st->wins, st->losses,
+             st->draws, rate10 / 10, rate10 % 10);
+}
+
+static Stats TotalStats(void) {
+    Stats t = {0, 0, 0};
+    for (int i = 0; i < LEVEL_COUNT; i++) {
+        t.wins += g_stats[i].wins;
+        t.losses += g_stats[i].losses;
+        t.draws += g_stats[i].draws;
+    }
+    return t;
+}
+
+static void UpdateStatsLine(void) {
+    char buf[200], a[80], b[80];
+    Stats t = TotalStats();
+    FormatStats(b, sizeof b, &t);
+    if (TwoPlayers()) {
+        snprintf(buf, sizeof buf, "成績 (起動後, AI 戦): %s", b);
+    } else {
+        FormatStats(a, sizeof a, &g_stats[g_mode]);
+        snprintf(buf, sizeof buf, "成績 (起動後) レベル%d: %s", g_mode + 1, a);
+    }
+    SetTextUtf8(g_hStats, buf);
+}
+
+static void ShowAllStats(void) {
+    char buf[1024], line[120];
+    size_t n = 0;
+    n += (size_t)snprintf(buf + n, sizeof buf - n, "起動してからの AI 戦の成績\n\n");
+    for (int i = 0; i < LEVEL_COUNT; i++) {
+        FormatStats(line, sizeof line, &g_stats[i]);
+        n += (size_t)snprintf(buf + n, sizeof buf - n, "%s\n    %s\n", levels[i].name, line);
+    }
+    Stats t = TotalStats();
+    FormatStats(line, sizeof line, &t);
+    snprintf(buf + n, sizeof buf - n, "\n合計: %s", line);
+    WCHAR w[1024];
+    MultiByteToWideChar(CP_UTF8, 0, buf, -1, w, 1024);
+    MessageBoxW(g_hwnd, w, L"成績", MB_OK | MB_ICONINFORMATION);
+}
+
 static void FinishGame(void) {
     g_game_over = 1;
     Redraw();
@@ -345,10 +399,19 @@ static void FinishGame(void) {
         snprintf(buf, sizeof buf, "%s%s (%s %d - %d %s)", head, bc == wc ? "" : "の勝ち",
                  SideName(1), bc, wc, SideName(0));
     } else {
-        const char *you = bc == wc ? "引き分けです"
-                        : ((bc > wc) == g_human_black ? "あなたの勝ちです！" : "あなたの負けです");
-        snprintf(buf, sizeof buf, "%s%s (%s %d - %d %s)\n%s",
-                 head, bc == wc ? "" : "の勝ち", SideName(1), bc, wc, SideName(0), you);
+        int mine = g_human_black ? bc : wc, ai = g_human_black ? wc : bc;
+        Stats *st = &g_stats[g_mode];
+        if (mine > ai) st->wins++;
+        else if (ai > mine) st->losses++;
+        else st->draws++;
+        UpdateStatsLine();
+        char rec[80];
+        FormatStats(rec, sizeof rec, st);
+        const char *you = mine == ai ? "引き分けです"
+                        : (mine > ai ? "あなたの勝ちです！" : "あなたの負けです");
+        snprintf(buf, sizeof buf, "%s%s (%s %d - %d %s)\n%s\n\nレベル%d の成績 (起動後): %s",
+                 head, bc == wc ? "" : "の勝ち", SideName(1), bc, wc, SideName(0), you,
+                 g_mode + 1, rec);
     }
     WCHAR w[256];
     MultiByteToWideChar(CP_UTF8, 0, buf, -1, w, 256);
@@ -400,6 +463,7 @@ static void NewGame(void) {
     g_kifu_moves[0] = 0;
     UpdateKifu();
     SetTextUtf8(g_hInfo, "");
+    UpdateStatsLine();
     SetControlsEnabled(1);
     InvalidateRect(g_hwnd, NULL, TRUE);
     ProcessTurns();
@@ -475,6 +539,8 @@ static void CreateControls(void) {
 
     g_hStatus = MakeChild(L"STATIC", "", 0, 20, STATUS_Y, CLIENT_W - 40, 22, 0);
     g_hInfo = MakeChild(L"STATIC", "", 0, 20, INFO_Y, CLIENT_W - 40, 22, 0);
+    g_hStats = MakeChild(L"STATIC", "", 0, 20, STATS_Y, CLIENT_W - 40, 22, 0);
+    MakeChild(L"BUTTON", "成績一覧", 0, 440, ROW2_Y - 1, 84, 28, ID_BTN_STATS);
 
     MakeChild(L"STATIC", "棋譜:", 0, 20, KIFU_Y + 5, 40, 20, 0);
     g_hKifu = MakeChild(L"EDIT", "", WS_BORDER | ES_READONLY | ES_AUTOHSCROLL,
@@ -521,6 +587,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             NewGame();
         } else if (id == ID_BTN_COPY && code == BN_CLICKED) {
             CopyKifu();
+        } else if (id == ID_BTN_STATS && code == BN_CLICKED) {
+            ShowAllStats();
         } else if (code == CBN_SELCHANGE) {
             int idx = (int)SendMessageW((HWND)lParam, CB_GETCURSEL, 0, 0);
             if (id == ID_COMBO_MODE) { g_mode = idx; NewGame(); }
