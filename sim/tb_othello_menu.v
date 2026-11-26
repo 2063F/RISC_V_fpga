@@ -95,8 +95,12 @@ module tb_othello_menu;
         key = 0;
     end
 
+    // Waits 1 ms first: the last character of a prompt arrives here as the
+    // program still writes that line to the VGA, and a key already down when
+    // it starts waiting counts as held, not as a new press.
     task press(input [6:0] k);
         begin
+            #1_000_000;
             press_key = k;
             -> do_press;
         end
