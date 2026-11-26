@@ -6,8 +6,8 @@
  * 追加のインストールは要らない (単一の .exe)。
  *
  *   - 対戦: AI レベル 1-6 (FPGA 版と同じ) または 二人対戦
- *   - 先手 / 後手、色の呼び名 (赤・緑 / 黒・白)、持ち時間 (レベル 5, 6)
- *   - 置ける場所 (黄色の点)、直前の手 (赤 / 白の点)、AI の読んだ深さと時間
+ *   - 先手 / 後手、持ち時間 (レベル 5, 6)。石は黒・白 (FPGA 版の赤・緑の呼び名はない)
+ *   - 置ける場所 (黄色の点)、直前の手 (赤い点)、AI の読んだ深さと時間
  *   - ハート 1 の代わりにスレッドを 1 本使い、レベル 4, 5 は 2 スレッドで読む
  *
  * ビルド (MinGW-w64, リポジトリのルートで):
@@ -70,7 +70,6 @@ static const int think_choices[] = { 1, 3, 10, 30, 50 };
 
 #define ID_COMBO_MODE 101
 #define ID_COMBO_ORDER 102
-#define ID_COMBO_NAMES 103
 #define ID_COMBO_THINK 104
 #define ID_BTN_NEWGAME 105
 #define ID_BTN_COPY 106
@@ -80,11 +79,10 @@ static const int think_choices[] = { 1, 3, 10, 30, 50 };
 /* ---- 設定と対局の状態 ---- */
 static HINSTANCE g_hInst;
 static HFONT g_hFont;
-static HWND g_hwnd, g_hMode, g_hOrder, g_hNames, g_hThink, g_hNew, g_hStatus, g_hInfo, g_hKifu;
+static HWND g_hwnd, g_hMode, g_hOrder, g_hThink, g_hNew, g_hStatus, g_hInfo, g_hKifu;
 
 static int g_mode = 0;          /* 0-5: AI レベル、MODE_TWO_PLAYERS: 二人対戦 */
 static int g_human_black = 1;   /* AI 戦: 1 = あなたが先手 */
-static int g_black_white = 0;   /* 0: 赤・緑、1: 黒・白 */
 static int g_think_idx = 1;     /* 3 秒 */
 
 static Bitboard g_black, g_white;
@@ -188,8 +186,7 @@ static void ComboAdd(HWND combo, const char *s) {
 }
 
 static const char *SideName(int is_black) {
-    if (g_black_white) return is_black ? "黒" : "白";
-    return is_black ? "赤" : "緑";
+    return is_black ? "黒" : "白";
 }
 
 static int TwoPlayers(void) { return g_mode == MODE_TWO_PLAYERS; }
@@ -249,12 +246,12 @@ static void DrawBoard(HDC hdc) {
         hints = get_moves(P, O);
     }
 
-    /* 赤・緑: 赤と緑の石、直前の手は白い点。黒・白: 黒と白の石、直前の手は赤い点 */
-    COLORREF black_fill = g_black_white ? RGB(0, 0, 0) : RGB(220, 40, 40);
-    COLORREF white_fill = g_black_white ? RGB(255, 255, 255) : RGB(110, 230, 90);
-    COLORREF black_edge = g_black_white ? RGB(128, 128, 128) : RGB(120, 0, 0);
-    COLORREF white_edge = g_black_white ? RGB(128, 128, 128) : RGB(0, 90, 0);
-    COLORREF last_dot = g_black_white ? RGB(230, 30, 30) : RGB(255, 255, 255);
+    /* 黒と白の石、直前の手は赤い点 */
+    COLORREF black_fill = RGB(0, 0, 0);
+    COLORREF white_fill = RGB(255, 255, 255);
+    COLORREF black_edge = RGB(128, 128, 128);
+    COLORREF white_edge = RGB(128, 128, 128);
+    COLORREF last_dot = RGB(230, 30, 30);
 
     /* 1 行目 (a1-h1) を上に描く (FPGA 版の盤面表示と同じ向き) */
     HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(0, 0, 0));
@@ -467,14 +464,8 @@ static void CreateControls(void) {
 
     g_hNew = MakeChild(L"BUTTON", "新しい対局", 0, 440, ROW1_Y - 1, 84, 28, ID_BTN_NEWGAME);
 
-    MakeChild(L"STATIC", "色:", 0, 20, ROW2_Y + 4, 40, 20, 0);
-    g_hNames = MakeChild(L"COMBOBOX", "", CBS_DROPDOWNLIST, 62, ROW2_Y, 100, 200, ID_COMBO_NAMES);
-    ComboAdd(g_hNames, "赤・緑");
-    ComboAdd(g_hNames, "黒・白");
-    SendMessageW(g_hNames, CB_SETCURSEL, (WPARAM)g_black_white, 0);
-
-    MakeChild(L"STATIC", "持ち時間 (レベル5,6):", 0, 180, ROW2_Y + 4, 140, 20, 0);
-    g_hThink = MakeChild(L"COMBOBOX", "", CBS_DROPDOWNLIST, 322, ROW2_Y, 80, 200, ID_COMBO_THINK);
+    MakeChild(L"STATIC", "持ち時間 (レベル5,6):", 0, 20, ROW2_Y + 4, 140, 20, 0);
+    g_hThink = MakeChild(L"COMBOBOX", "", CBS_DROPDOWNLIST, 162, ROW2_Y, 80, 200, ID_COMBO_THINK);
     for (int i = 0; i < THINK_CHOICES; i++) {
         char s[16];
         snprintf(s, sizeof s, "%d 秒", think_choices[i]);
@@ -534,7 +525,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int idx = (int)SendMessageW((HWND)lParam, CB_GETCURSEL, 0, 0);
             if (id == ID_COMBO_MODE) { g_mode = idx; NewGame(); }
             else if (id == ID_COMBO_ORDER) { g_human_black = (idx == 0); NewGame(); }
-            else if (id == ID_COMBO_NAMES) { g_black_white = idx; Redraw(); }
             else if (id == ID_COMBO_THINK) { g_think_idx = idx; }
         }
         break;
