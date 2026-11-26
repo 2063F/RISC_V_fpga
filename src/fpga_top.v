@@ -76,6 +76,7 @@ module fpga_top #(
     wire [63:0] led_red_bitmap;
     wire [63:0] vga_hint_bitmap;
     wire        vga_show_board;
+    wire        vga_red_green;
     wire [6:0]  vga_last_move;
     wire        vga_text_we;
     wire [11:0] vga_text_waddr;
@@ -122,6 +123,7 @@ module fpga_top #(
         .led_red_bitmap   (led_red_bitmap),
         .vga_hint_bitmap  (vga_hint_bitmap),
         .vga_show_board   (vga_show_board),
+        .vga_red_green    (vga_red_green),
         .vga_last_move    (vga_last_move),
         .vga_text_we      (vga_text_we),
         .vga_text_waddr   (vga_text_waddr),
@@ -161,6 +163,7 @@ module fpga_top #(
         .hint_bitmap   (vga_hint_bitmap),
         .last_move     (vga_last_move),
         .show_board    (vga_show_board),
+        .red_green     (vga_red_green),
         .text_we       (vga_text_we),
         .text_waddr    (vga_text_waddr),
         .text_wdata    (vga_text_wdata),

@@ -3,7 +3,7 @@
 // The screen is 80 x 30 characters (8 x 16 pixels) of text, with the 8x8
 // Othello board on top of it while it is shown: the board covers rows 1-28,
 // columns 12-67, so row 0, row 29 and the 12 columns on either side stay
-// visible. With the board hidden (vga_show_board(0)) the whole screen is text.
+// visible. With the board hidden (vga_show_board(0, ...)) the whole screen is text.
 // Characters are ASCII 32-126; VGA_YELLOW draws one yellow instead of white.
 // See board_io.v for the registers.
 #ifndef VGA_H
@@ -52,9 +52,11 @@ VGA_FN void vga_clear(void)
         vga_blank(0, row, VGA_COLS);
 }
 
-static inline void vga_show_board(int on)
+// on: the board over the text. red_green: its stones red and green (on a
+// blue board) instead of black and white
+static inline void vga_show_board(int on, int red_green)
 {
-    VGA_CTRL = on ? 1u : 0u;
+    VGA_CTRL = (on ? 1u : 0u) | (red_green ? 2u : 0u);
 }
 
 // Squares to mark with a yellow dot (same numbering as the stone bitmaps)

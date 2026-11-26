@@ -15,6 +15,7 @@ module tb_vga_board;
         .hint_bitmap  (hint_bitmap),
         .last_move    (last_move),
         .show_board   (show_board),
+        .red_green    (red_green),
         .text_we      (text_we),
         .text_waddr   (text_waddr),
         .text_wdata   (text_wdata),
@@ -30,6 +31,7 @@ module tb_vga_board;
     reg [63:0] hint_bitmap = 64'd0;
     reg [6:0]  last_move   = 7'd0;
     reg        show_board  = 1'b1;
+    reg        red_green   = 1'b0;
     reg        text_we     = 1'b0;
     reg [11:0] text_waddr  = 12'd0;
     reg [7:0]  text_wdata  = 8'd0;
@@ -144,6 +146,14 @@ module tb_vga_board;
         check_pixel(10'd700, 10'd100, 3'b000, "h blanking (next frame)");
 
         // Text only: the board is gone and the text under it shows
+        red_green = 1'b1;
+        check_pixel(10'd180, 10'd44,  3'b001, "R/G: b1 empty (blue)");
+        check_pixel(10'd292, 10'd156, 3'b110, "R/G: d3 hint dot (yellow)");
+        check_pixel(10'd292, 10'd200, 3'b010, "R/G: d4 white -> green");
+        check_pixel(10'd348, 10'd200, 3'b100, "R/G: e4 black -> red");
+        check_pixel(10'd348, 10'd212, 3'b111, "R/G: e4 last move (white)");
+        red_green = 1'b0;
+
         show_board = 1'b0;
         check_pixel(10'd162, 10'd80,  3'b111, "text where the board was");
         check_pixel(10'd292, 10'd212, 3'b000, "no board in text mode");

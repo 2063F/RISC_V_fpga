@@ -6,8 +6,9 @@
 // at one of six levels, or two people taking turns on the same keyboards;
 // against the AI, whether you move first (Black) or second (White); and
 // whether the sides are called Red / Green or Black / White. Black always
-// moves first. The names only change the UART output; the LED matrix shows
-// the two sides in its two colors as before.
+// moves first. The names change the UART output and the stones on the VGA
+// (red and green, or black and white); the LED matrix shows the two sides in
+// its two colors as before.
 //
 // Press a matrix keyboard key 1-64 to place a stone: key N corresponds to
 // square N-1 (row-major, same numbering as keyboard_scan.c: sq = row*8 + col).
@@ -486,27 +487,97 @@ static void screen_last_move(int is_black, int sq, const SearchResult *ai, uint3
     vga_last_move(sq);
 }
 
-// Row 0 and the empty board of a new game
+// Left panel, rows 18-25: your record at this level against the AI (the
+// totals of print_result; draws count as games, not wins)
+static void screen_stats(void)
+{
+    static const char *const label[3] = { "Win   ", "Lose  ", "Draw  " };
+    const LevelStats *st = &stats.lv[level];
+    uint32_t n[3] = { st->wins, st->losses, st->draws };
+    uint32_t games = n[0] + n[1] + n[2];
+    for (int row = 18; row <= 25; row++)
+        vga_blank(0, row, 10);
+    vga_puts(0, 18, "Record", VGA_YELLOW);
+    l_clear();
+    l_str("Games ");
+    l_int((int)games);
+    vga_puts(0, 19, line, 0);
+    for (int i = 0; i < 3; i++) {
+        l_clear();
+        l_str(label[i]);
+        l_int((int)n[i]);
+        vga_puts(0, 20 + i, line, 0);
+    }
+    vga_puts(0, 24, "Win rate", 0);
+    l_clear();
+    if (games) {
+        uint32_t rate10 = (n[0] * 1000u + games / 2u) / games;
+        l_int((int)(rate10 / 10u));
+        l_str(".");
+        l_int((int)(rate10 % 10u));
+        l_str("%");
+    } else {
+        l_str("-");
+    }
+    vga_puts(0, 25, line, 0);
+}
+
+// s word-wrapped into the left panel (columns 0-9) from row on; returns the
+// next row
+static int panel_text(int row, const char *s)
+{
+    while (*s) {
+        while (*s == ' ')
+            s++;
+        int n = 0, cut = 0;
+        while (s[n] && n < 10) {
+            n++;
+            if (s[n] == ' ' || s[n] == '\0')
+                cut = n;
+        }
+        if (cut == 0)
+            cut = n;
+        for (int i = 0; i < cut; i++)
+            vga_putc(i, row, s[i], 0);
+        s += cut;
+        row++;
+    }
+    return row;
+}
+
+// The empty board of a new game: the title, the coordinates and the game
+// chosen in the menu around it
 static void screen_new_game(void)
 {
     vga_clear();
     vga_hints(0);
     vga_last_move(-1);
-    vga_show_board(1);
-    l_clear();
-    l_str("OTHELLO  ");
-    if (two_players) {
-        l_str("Two players");
-    } else {
-        l_str("vs AI, level ");
-        l_str(levels[level].name);
-        if (levels[level].depth == TIMED) {
-            l_str(" (");
-            l_int(think_choices[think_idx]);
-            l_str(" s/move)");
-        }
+    vga_show_board(1, !black_white);
+    vga_puts(0, 0, "OTHELLO", VGA_YELLOW);
+    // a-h on row 0 over the middle of each column (x 96 + 56 c + 28 is text
+    // column 15 + 7 c), 1-8 in column 10 beside each row (y 16 + 56 r + 28,
+    // in text row (44 + 56 r) / 16)
+    for (int i = 0; i < 8; i++) {
+        vga_putc(15 + 7 * i, 0, (char)('a' + i), 0);
+        vga_putc(10, (44 + 56 * i) / 16, (char)('1' + i), 0);
     }
-    vga_puts(0, 0, line, VGA_YELLOW);
+    // The game, in the left panel under the disc counts
+    if (two_players) {
+        panel_text(10, "Two players");
+    } else {
+        l_clear();
+        l_str("Level ");
+        l_int(level + 1);
+        vga_puts(0, 10, line, 0);
+        int row = panel_text(11, levels[level].name + 2);   // the name without "N "
+        if (levels[level].depth == TIMED) {
+            l_clear();
+            l_int(think_choices[think_idx]);
+            l_str(" s/move");
+            vga_puts(0, row, line, 0);
+        }
+        screen_stats();
+    }
 }
 
 // A key from wait_key_press as a menu number: matrix keys as they are (1-64),
@@ -533,7 +604,7 @@ static void setup_game(void)
 {
     for (;;) {
         // The same lines on the UART and, as a full screen of text, the VGA
-        vga_show_board(0);
+        vga_show_board(0, 0);
         vga_clear();
         vga_puts(36, 3, "OTHELLO", VGA_YELLOW);
         uart_print("\n=== New game ===\n");
@@ -777,6 +848,8 @@ int main(void)
         print_board(black, white, 0, black_white);
         update_led_matrix(black, white);
         print_result(black, white);
+        if (!two_players)
+            screen_stats();             // with this game counted
 
         // Game over on the screen until a key starts the next menu
         vga_hints(0);

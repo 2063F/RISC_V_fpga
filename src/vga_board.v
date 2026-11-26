@@ -19,6 +19,9 @@
 // same orientation print_board() uses on the UART (a1 = top-left).
 //   empty square = green, black stone = black disc, white stone = white disc,
 //   grid lines = black, outside the board = black.
+// With red_green set (the sides called Red / Green), black's stones are red
+// and white's green, on a blue board so that the green ones stand out, and
+// the last-move dot is white.
 //
 // Timing: 25 MHz pixel rate from the 50 MHz clock via a clock enable (no PLL,
 // no second clock domain). The standard is 25.175 MHz; 25.0 MHz (59.5 Hz
@@ -51,6 +54,7 @@ module vga_board (
     input  wire [63:0] hint_bitmap,
     input  wire [6:0]  last_move,    // bit 6 = valid, bits 5:0 = square
     input  wire        show_board,
+    input  wire        red_green,    // 1: red and green stones on a blue board
     input  wire        text_we,      // text RAM write port (CPU)
     input  wire [11:0] text_waddr,   // row * 128 + column
     input  wire [7:0]  text_wdata,
@@ -261,14 +265,16 @@ module vga_board (
             end else if (grid) begin
                 {vga_r, vga_g, vga_b} <= 3'b000;
             end else if (disc && (is_black || is_white)) begin
-                if (dot && is_last)
-                    {vga_r, vga_g, vga_b} <= 3'b100;   // red: the last move
+                if (dot && is_last)                    // the last move: red dot (white on red / green)
+                    {vga_r, vga_g, vga_b} <= red_green ? 3'b111 : 3'b100;
+                else if (red_green)                    // black's stones red, white's green
+                    {vga_r, vga_g, vga_b} <= is_white ? 3'b010 : 3'b100;
                 else
                     {vga_r, vga_g, vga_b} <= is_white ? 3'b111 : 3'b000;
             end else if (dot && is_hint) begin
                 {vga_r, vga_g, vga_b} <= 3'b110;       // yellow: a move the player can make
             end else begin
-                {vga_r, vga_g, vga_b} <= 3'b010;       // board green
+                {vga_r, vga_g, vga_b} <= red_green ? 3'b001 : 3'b010;  // board blue / green
             end
         end
     end

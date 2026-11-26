@@ -9,8 +9,9 @@
 // vga_board's text RAM:
 //
 //   1. the menu: board hidden, "OTHELLO" and the menu lines on the screen
-//   2. key 1 (level 1, you move first): board shown, the title on row 0,
-//      ">Red You" and "2 discs" on the left, the prompt on row 29, and the
+//   2. key 1 (level 1, you move first): board shown with red and green
+//      stones, the title and a-h on row 0, 1-8 in column 10, ">Red You",
+//      "2 discs", the level and the record on the left, the prompt on row 29, and the
 //      four opening moves as hints
 //
 // Each screen is also printed, as 30 lines of text.
@@ -57,6 +58,7 @@ module tb_othello_screen;
 
     wire [63:0] led_green_bitmap, led_red_bitmap, hint_bitmap;
     wire        show_board;
+    wire        red_green;
     wire [6:0]  last_move;
     wire        text_we;
     wire [11:0] text_waddr;
@@ -82,6 +84,7 @@ module tb_othello_screen;
         .led_red_bitmap   (led_red_bitmap),
         .vga_hint_bitmap  (hint_bitmap),
         .vga_show_board   (show_board),
+        .vga_red_green    (red_green),
         .vga_last_move    (last_move),
         .vga_text_we      (text_we),
         .vga_text_waddr   (text_waddr),
@@ -96,6 +99,7 @@ module tb_othello_screen;
         .hint_bitmap  (hint_bitmap),
         .last_move    (last_move),
         .show_board   (show_board),
+        .red_green    (red_green),
         .text_we      (text_we),
         .text_waddr   (text_waddr),
         .text_wdata   (text_wdata),
@@ -135,7 +139,7 @@ module tb_othello_screen;
     // -------------------------------------------------------------------------
     // The screen: print it, and look for a string on a row
     // -------------------------------------------------------------------------
-    integer r, c, errors = 0;
+    integer r, c, j, errors = 0;
     reg [7:0] ch;
 
     task show_screen;
@@ -209,7 +213,27 @@ module tb_othello_screen;
             $display("FAIL: the board is hidden in the game");
             errors = errors + 1;
         end
-        expect_row(0,  "OTHELLO  vs AI, level 1", 23);
+        if (red_green !== 1'b1) begin
+            $display("FAIL: Red / Green but black and white stones");
+            errors = errors + 1;
+        end
+        expect_row(0,  "OTHELLO", 7);
+        for (j = 0; j < 8; j = j + 1) begin
+            if ((vga.text_mem[15 + 7 * j] & 8'h7F) != "a" + j) begin
+                $display("FAIL: no %c over column %0d", "a" + j, j);
+                errors = errors + 1;
+            end
+            if ((vga.text_mem[((44 + 56 * j) / 16) * 128 + 10] & 8'h7F) != "1" + j) begin
+                $display("FAIL: no %c beside row %0d", "1" + j, j);
+                errors = errors + 1;
+            end
+        end
+        expect_row(10, "Level 1", 7);
+        expect_row(11, "Settai", 6);
+        expect_row(12, "(for kids)", 10);
+        expect_row(18, "Record", 6);
+        expect_row(19, "Games 0", 7);
+        expect_row(25, "-", 1);
         expect_row(3,  ">Red You", 8);
         expect_row(4,  "2 discs", 7);
         expect_row(7,  "Green AI", 8);

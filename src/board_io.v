@@ -33,7 +33,8 @@
 //   0x8000_0044 : VGA hint bitmap, bits [31:0]  (squares marked with a dot)
 //   0x8000_0048 : VGA hint bitmap, bits [63:32]
 //   0x8000_004C : VGA control: bit 0 = show the board (1 after reset; 0 = the
-//                 whole screen is text)
+//                 whole screen is text), bit 1 = red and green stones (the
+//                 sides called Red / Green; 0 after reset = black and white)
 //   0x8000_0050 : VGA last move: bit 6 = valid, bits 5:0 = square (red dot)
 //   0x8000_1000 - 0x8000_1FFF : VGA text, write only: byte at
 //                 0x8000_1000 + row * 128 + column (80 x 30), bits 6:0 the
@@ -71,6 +72,7 @@ module board_io (
     output reg  [63:0] led_red_bitmap,
     output reg  [63:0] vga_hint_bitmap,
     output reg         vga_show_board,
+    output reg         vga_red_green,
     output reg  [6:0]  vga_last_move,
     output reg         vga_text_we,
     output reg  [11:0] vga_text_waddr,
@@ -132,6 +134,7 @@ module board_io (
             led_red_bitmap   <= 64'd0;
             vga_hint_bitmap  <= 64'd0;
             vga_show_board   <= 1'b1;
+            vga_red_green    <= 1'b0;
             vga_last_move    <= 7'd0;
         end else begin
             if (wr_q && waddr_q == LED_ADDR) begin
@@ -160,6 +163,7 @@ module board_io (
             end
             if (wr_q && waddr_q == VGA_CTRL_ADDR) begin
                 vga_show_board <= wdata_q[0];
+                vga_red_green  <= wdata_q[1];
             end
             if (wr_q && waddr_q == VGA_LAST_ADDR) begin
                 vga_last_move <= wdata_q[6:0];
@@ -183,7 +187,7 @@ module board_io (
                                                  2'd0, usbkey_index};
                 VGA_HINT_LO_ADDR:  read_data <= vga_hint_bitmap[31:0];
                 VGA_HINT_HI_ADDR:  read_data <= vga_hint_bitmap[63:32];
-                VGA_CTRL_ADDR:     read_data <= {31'd0, vga_show_board};
+                VGA_CTRL_ADDR:     read_data <= {30'd0, vga_red_green, vga_show_board};
                 VGA_LAST_ADDR:     read_data <= {25'd0, vga_last_move};
                 default:           read_data <= 32'd0;
             endcase
