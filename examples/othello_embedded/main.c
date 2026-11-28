@@ -6,8 +6,9 @@
 // at one of six levels, or two people taking turns on the same keyboards;
 // against the AI, whether you move first (Black) or second (White); and
 // whether the sides are called Red / Green or Black / White. Black always
-// moves first. The names only change the UART output; the LED matrix shows
-// the two sides in its two colors as before.
+// moves first. The names change the UART output and the stones on the VGA
+// (red and green, or black and white); the LED matrix shows the two sides in
+// its two colors as before.
 //
 // Press a matrix keyboard key 1-64 to place a stone: key N corresponds to
 // square N-1 (row-major, same numbering as keyboard_scan.c: sq = row*8 + col).
@@ -15,7 +16,10 @@
 // a number 1-8, e.g. "d3" (Backspace cancels the letter). usb_keyboard.v
 // reports each key as an index 0-63 (see the table at its top); read_move()
 // picks out the letter and number keys from those indexes.
-// Board and status are printed over UART - connect with tools/uart_monitor.ps1.
+// Board and status are printed over UART - connect with tools/uart_monitor.ps1 -
+// and shown on a VGA monitor (vga_board.v): the menu as a full screen of
+// text, the game as the board with the moves you can make (yellow dots), the
+// last move (red dot), the disc counts, the AI's search and a status line.
 //
 // The six AI levels (menu keys 1-6):
 //   1 Settai - for kids at the school festival: picks from the worst third of
@@ -23,19 +27,24 @@
 //   2 Easy   - plays a random legal move.
 //   3 Medium - picks from the best third of its moves (1-ply evaluation).
 //   4 Hard   - alpha-beta search, depth 2.
-//   5 Expert - alpha-beta search, depth SEARCH_DEPTH, on both harts.
-//   6 Expert, 1 hart - the same search on hart 0 alone, to compare the time.
-// After reset: level 1, you move first, Red / Green.
+//   5 Expert - iterative deepening on both harts, within the time per move
+//              chosen in the menu (key 10): depth 1, 2, 3, ... until the time
+//              is up, then the best move of the deepest finished depth, or
+//              of the moves already read at the next depth ("depth 5+").
+//              Near the end it reads to the end of the game.
+//   6 Expert, 1 hart - the same on hart 0 alone, to compare the depth reached.
+// After reset: level 1, you move first, Red / Green, 3 s per move.
 //
 // Hart 1 runs search_hart_main() and takes part in the searches of levels 4
-// and 5: the two harts share out the moves at the root (see search.c). Levels
-// 5 and 6 pick the same moves; each AI move prints how long it took.
+// and 5: the two harts share out the moves (see search.c). With the same time
+// level 5 gets further than level 6; each AI move prints the depth it
+// finished and how long it took.
 //
 // Build (hart 1 needs link_mp.ld; the search stack wants more than the
-// default 4 KB per hart; a depth-5 endgame search uses about 7 KB):
+// default 4 KB per hart: about 300 bytes per ply, see MAX_SEARCH_DEPTH):
 //   riscv64-unknown-elf-gcc -march=rv32imac_zicsr -mabi=ilp32 -O2 -nostdlib
 //     -nostartfiles -I examples -T tools/link_mp.ld
-//     -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S
+//     -Wl,--defsym=__hart_stack_size=0x3000 tools/crt0.S
 //     examples/othello_embedded/{main,othello,evaluate,search}.c -lgcc
 //     -o examples/othello_embedded/othello.elf
 // =============================================================================
@@ -45,6 +54,7 @@
 #include "uart.h"
 #include "csr.h"
 #include "mp.h"
+#include "vga.h"
 #include <stdint.h>
 
 #define MMIO_KBD_ROW (*(volatile uint32_t *)0x80000028u)
@@ -69,17 +79,16 @@
 #define KBD_COLS 8
 #define KBD_IDLE 0xFFu
 
-// AI search depth. The original PC engine used depth<=30 with a ~25MB
-// transposition table and a 1.2s clock-based time limit; none of that fits
-// this CPU (32KB ROM / 64KB RAM, no timer), so the search here is a plain
-// fixed-depth alpha-beta walk (see search.c). Raise this if the AI feels
-// too weak and the move still returns in acceptable time; lower it if a
-// move takes too long.
-#define SEARCH_DEPTH 4
+// Deepest search of the timed levels. Each ply puts one negamax frame on the
+// stack (288 bytes), so with the 12 KB stacks (see the build line above) this
+// leaves room for passes and the evaluation below the deepest one.
+#define MAX_SEARCH_DEPTH 20
 
-// AI levels. depth 0 = no search, choose with find_weak_move(pick);
-// otherwise find_best_move at that depth on `harts` harts.
+// AI levels. depth 0 = no search, choose with find_weak_move(pick); depth
+// TIMED = iterative deepening within think_s seconds; otherwise
+// find_best_move at that depth. On `harts` harts.
 #define LEVEL_COUNT 6
+#define TIMED       (-1)
 
 typedef struct {
     const char *name;
@@ -89,13 +98,25 @@ typedef struct {
 } LevelDef;
 
 static const LevelDef levels[LEVEL_COUNT] = {
-    { "1 Settai (for kids)", PICK_WORST,  0,            1 },
-    { "2 Easy",              PICK_RANDOM, 0,            1 },
-    { "3 Medium",            PICK_GOOD,   0,            1 },
-    { "4 Hard",              PICK_GOOD,   2,            2 },
-    { "5 Expert",            PICK_GOOD,   SEARCH_DEPTH, 2 },
-    { "6 Expert, 1 hart",    PICK_GOOD,   SEARCH_DEPTH, 1 },
+    { "1 Settai (for kids)", PICK_WORST,  0,     1 },
+    { "2 Easy",              PICK_RANDOM, 0,     1 },
+    { "3 Medium",            PICK_GOOD,   0,     1 },
+    { "4 Hard",              PICK_GOOD,   2,     2 },
+    { "5 Expert",            PICK_GOOD,   TIMED, 2 },
+    { "6 Expert, 1 hart",    PICK_GOOD,   TIMED, 1 },
 };
+
+// Time per move of the timed levels, chosen in the menu (key 10). 50 s keeps
+// within a one-minute-per-move rule with room for the move to be played.
+static const int think_choices[] = { 1, 3, 10, 30, 50 };
+#define THINK_CHOICES (int)(sizeof think_choices / sizeof think_choices[0])
+static int think_idx = 1;     // 3 s after reset
+
+// The clock of the timed search (search.c)
+uint32_t search_time_us(void)
+{
+    return (uint32_t)timer_now();
+}
 
 // The game set up by the menu (setup_game). Plain statics: back to the
 // defaults after a reset.
@@ -109,13 +130,6 @@ static const char *side_name(int is_black)
     if (black_white)
         return is_black ? "Black" : "White";
     return is_black ? "Red" : "Green";
-}
-
-static char side_char(int is_black)
-{
-    if (black_white)
-        return is_black ? 'B' : 'W';
-    return is_black ? 'R' : 'G';
 }
 
 // Random numbers for levels 1-3. There is no timer, so entropy comes from
@@ -361,9 +375,214 @@ static void print_result(Bitboard black, Bitboard white)
            (int)st->draws, (int)(rate10 / 10u), (int)(rate10 % 10u));
 }
 
+// -----------------------------------------------------------------------------
+// The VGA screen (see vga.h for the layout)
+// -----------------------------------------------------------------------------
+// Lines are built here and then sent to the UART, the screen or both.
+static char line[84];
+static int  line_len;
+
+static __attribute__((noinline)) void l_clear(void)
+{
+    line_len = 0;
+    line[0] = '\0';
+}
+
+static __attribute__((noinline)) void l_str(const char *s)
+{
+    while (*s && line_len < 80)
+        line[line_len++] = *s++;
+    line[line_len] = '\0';
+}
+
+static __attribute__((noinline)) void l_int(int v)
+{
+    char b[12];
+    int n = 0;
+    unsigned u = v < 0 ? 0u - (unsigned)v : (unsigned)v;
+    do {
+        b[n++] = (char)('0' + u % 10u);
+        u /= 10u;
+    } while (u);
+    if (v < 0)
+        b[n++] = '-';
+    while (n > 0 && line_len < 80)
+        line[line_len++] = b[--n];
+    line[line_len] = '\0';
+}
+
+// Seconds with three decimals, from milliseconds
+static void l_secs(uint32_t ms)
+{
+    l_int((int)(ms / 1000u));
+    char frac[5] = { '.', (char)('0' + ms / 100u % 10u), (char)('0' + ms / 10u % 10u),
+                     (char)('0' + ms % 10u), '\0' };
+    l_str(frac);
+}
+
+// The line to the UART, and to the screen at (col, row) unless row < 0
+static __attribute__((noinline)) void l_say(int col, int row, int attr)
+{
+    uart_print(line);
+    uart_print("\n");
+    if (row >= 0)
+        vga_puts(col, row, line, attr);
+}
+
+// The status line at the bottom of the screen (row 29)
+static __attribute__((noinline)) void screen_status(int attr)
+{
+    vga_blank(0, VGA_ROWS - 1, VGA_COLS);
+    vga_puts(0, VGA_ROWS - 1, line, attr);
+}
+
+// Left panel: both sides with their disc counts, the one to move marked
+static void screen_counts(Bitboard black, Bitboard white, int to_move_black, int game_over)
+{
+    for (int side = 1; side >= 0; side--) {
+        int row = side ? 3 : 7;
+        int to_move = !game_over && (side == to_move_black);
+        l_clear();
+        l_str(to_move ? ">" : " ");
+        l_str(side_name(side));
+        if (!two_players)
+            l_str(side == human_black ? " You" : " AI");
+        vga_blank(0, row, 12);
+        vga_puts(0, row, line, to_move ? VGA_YELLOW : 0);
+        l_clear();
+        l_str(" ");
+        l_int(popcount(side ? black : white));
+        l_str(" discs");
+        vga_blank(0, row + 1, 12);
+        vga_puts(0, row + 1, line, 0);
+    }
+}
+
+// Right panel: the last move, and for the AI's how deep and how long it read
+static void screen_last_move(int is_black, int sq, const SearchResult *ai, uint32_t ms)
+{
+    for (int row = 3; row <= 8; row++)
+        vga_blank(68, row, 12);
+    vga_puts(68, 3, "Last move", VGA_YELLOW);
+    char buf[3];
+    square_to_str(sq, buf);
+    l_clear();
+    l_str(side_name(is_black));
+    l_str(" ");
+    l_str(buf);
+    vga_puts(68, 4, line, 0);
+    if (ai && ai->depth_reached > 0 && levels[level].depth != 0) {
+        l_clear();
+        l_str("depth ");
+        l_int(ai->depth_reached);
+        l_str(ai->partial ? "+" : "");
+        vga_puts(68, 6, line, 0);
+    }
+    if (ai) {
+        l_clear();
+        l_secs(ms);
+        l_str(" s");
+        vga_puts(68, 7, line, 0);
+    }
+    vga_last_move(sq);
+}
+
+// Left panel, rows 18-25: your record at this level against the AI (the
+// totals of print_result; draws count as games, not wins)
+static void screen_stats(void)
+{
+    static const char *const label[3] = { "Win   ", "Lose  ", "Draw  " };
+    const LevelStats *st = &stats.lv[level];
+    uint32_t n[3] = { st->wins, st->losses, st->draws };
+    uint32_t games = n[0] + n[1] + n[2];
+    for (int row = 18; row <= 25; row++)
+        vga_blank(0, row, 10);
+    vga_puts(0, 18, "Record", VGA_YELLOW);
+    l_clear();
+    l_str("Games ");
+    l_int((int)games);
+    vga_puts(0, 19, line, 0);
+    for (int i = 0; i < 3; i++) {
+        l_clear();
+        l_str(label[i]);
+        l_int((int)n[i]);
+        vga_puts(0, 20 + i, line, 0);
+    }
+    vga_puts(0, 24, "Win rate", 0);
+    l_clear();
+    if (games) {
+        uint32_t rate10 = (n[0] * 1000u + games / 2u) / games;
+        l_int((int)(rate10 / 10u));
+        l_str(".");
+        l_int((int)(rate10 % 10u));
+        l_str("%");
+    } else {
+        l_str("-");
+    }
+    vga_puts(0, 25, line, 0);
+}
+
+// s word-wrapped into the left panel (columns 0-9) from row on; returns the
+// next row
+static int panel_text(int row, const char *s)
+{
+    while (*s) {
+        while (*s == ' ')
+            s++;
+        int n = 0, cut = 0;
+        while (s[n] && n < 10) {
+            n++;
+            if (s[n] == ' ' || s[n] == '\0')
+                cut = n;
+        }
+        if (cut == 0)
+            cut = n;
+        for (int i = 0; i < cut; i++)
+            vga_putc(i, row, s[i], 0);
+        s += cut;
+        row++;
+    }
+    return row;
+}
+
+// The empty board of a new game: the title, the coordinates and the game
+// chosen in the menu around it
+static void screen_new_game(void)
+{
+    vga_clear();
+    vga_hints(0);
+    vga_last_move(-1);
+    vga_show_board(1, !black_white);
+    vga_puts(0, 0, "OTHELLO", VGA_YELLOW);
+    // a-h on row 0 over the middle of each column (x 96 + 56 c + 28 is text
+    // column 15 + 7 c), 1-8 in column 10 beside each row (y 16 + 56 r + 28,
+    // in text row (44 + 56 r) / 16)
+    for (int i = 0; i < 8; i++) {
+        vga_putc(15 + 7 * i, 0, (char)('a' + i), 0);
+        vga_putc(10, (44 + 56 * i) / 16, (char)('1' + i), 0);
+    }
+    // The game, in the left panel under the disc counts
+    if (two_players) {
+        panel_text(10, "Two players");
+    } else {
+        l_clear();
+        l_str("Level ");
+        l_int(level + 1);
+        vga_puts(0, 10, line, 0);
+        int row = panel_text(11, levels[level].name + 2);   // the name without "N "
+        if (levels[level].depth == TIMED) {
+            l_clear();
+            l_int(think_choices[think_idx]);
+            l_str(" s/move");
+            vga_puts(0, row, line, 0);
+        }
+        screen_stats();
+    }
+}
+
 // A key from wait_key_press as a menu number: matrix keys as they are (1-64),
-// on a USB keyboard F1-F12 as 1-12 and the number keys 1-9 as 1-9. Any other
-// key gives 0.
+// on a USB keyboard F1-F12 as 1-12, the number keys 1-9 as 1-9 and 0 as 10.
+// Any other key gives 0.
 static int menu_number(int key, int from_usb)
 {
     if (!from_usb)
@@ -373,27 +592,62 @@ static int menu_number(int key, int from_usb)
         return idx + 1;                             // F1-F12
     if (idx >= USBIDX_DIGIT1 && idx < USBIDX_DIGIT1 + 9)
         return idx - USBIDX_DIGIT1 + 1;             // 1-9
+    if (idx == USBIDX_DIGIT1 + 9)
+        return 10;                                  // 0
     return 0;
 }
 
-// The menu before every game. Keys 1-7 choose the game and start it, 8 and 9
+// The menu before every game. Keys 1-7 choose the game and start it, 8 to 10
 // change a setting and show the menu again, any other key starts the game
 // as shown.
 static void setup_game(void)
 {
     for (;;) {
+        // The same lines on the UART and, as a full screen of text, the VGA
+        vga_show_board(0, 0);
+        vga_clear();
+        vga_puts(36, 3, "OTHELLO", VGA_YELLOW);
         uart_print("\n=== New game ===\n");
-        for (int i = 0; i < LEVEL_COUNT; i++)
-            printf("  %d  vs AI, level %s\n", i + 1, levels[i].name);
-        uart_print("  7  Two players\n");
-        printf("  8  Against the AI you move: %s\n",
-               human_black ? "first" : "second");
-        printf("  9  Sides: %s\n", black_white ? "Black / White" : "Red / Green");
-        if (two_players)
-            uart_print("(other keys: two players)\n");
-        else
-            printf("(other keys: vs AI, level %s)\n", levels[level].name);
-        uart_print("Keys 1-9 on the matrix, F1-F9 or 1-9 on a USB keyboard.\n");
+        int row = 6;
+        for (int i = 0; i < LEVEL_COUNT; i++) {
+            l_clear();
+            l_str("  ");
+            l_int(i + 1);
+            l_str("  vs AI, level ");
+            l_str(levels[i].name);
+            l_say(14, row++, 0);
+        }
+        l_clear();
+        l_str("  7  Two players");
+        l_say(14, row++, 0);
+        row++;
+        l_clear();
+        l_str("  8  Against the AI you move: ");
+        l_str(human_black ? "first" : "second");
+        l_say(14, row++, 0);
+        l_clear();
+        l_str("  9  Sides: ");
+        l_str(black_white ? "Black / White" : "Red / Green");
+        l_say(14, row++, 0);
+        l_clear();
+        l_str(" 10  Time per move at levels 5 and 6: ");
+        l_int(think_choices[think_idx]);
+        l_str(" s");
+        l_say(14, row++, 0);
+        row++;
+        l_clear();
+        l_str("(other keys: ");
+        if (two_players) {
+            l_str("two players)");
+        } else {
+            l_str("vs AI, level ");
+            l_str(levels[level].name);
+            l_str(")");
+        }
+        l_say(14, row++, VGA_YELLOW);
+        l_clear();
+        l_str("Keys 1-10 on the matrix, F1-F10 or 1-9 and 0 on a USB keyboard.");
+        l_say(8, 26, 0);
 
         int from_usb;
         usb_key_flush();
@@ -408,6 +662,9 @@ static void setup_game(void)
             continue;
         } else if (n == 9) {
             black_white = !black_white;
+            continue;
+        } else if (n == 10) {
+            think_idx = (think_idx + 1) % THINK_CHOICES;
             continue;
         }
         break;
@@ -491,6 +748,7 @@ int main(void)
 
     for (;;) {
         setup_game();
+        screen_new_game();
         Bitboard black = INIT_BLACK;
         Bitboard white = INIT_WHITE;
         int current_is_black = 1;
@@ -508,23 +766,36 @@ int main(void)
                     break; /* neither side can move: game over */
                 }
                 printf("%s has no legal move. Pass.\n", side_name(!current_is_black));
+                vga_blank(68, 10, 12);
+                l_clear();
+                l_str(side_name(!current_is_black));
+                l_str(" passed");
+                vga_puts(68, 10, line, VGA_YELLOW);
                 continue;
             }
 
             // Show the player's legal moves; none while the AI is to move
             int human_turn = two_players || (current_is_black == human_black);
             Bitboard hints = human_turn ? moves : 0;
-            print_board(black, white, hints, side_char(1), side_char(0));
+            print_board(black, white, hints, black_white);
             update_led_matrix(black, white);
             print_score(black, white);
+            vga_hints(hints);
+            screen_counts(black, white, current_is_black, 0);
 
             if (human_turn) {
-                if (two_players)
-                    printf("%s to move. Press a key (1-64) or type a square (e.g. d3).\n",
-                           side_name(current_is_black));
-                else
-                    printf("Your move (%s). Press a key (1-64) or type a square (e.g. d3).\n",
-                           side_name(current_is_black));
+                l_clear();
+                if (two_players) {
+                    l_str(side_name(current_is_black));
+                    l_str(" to move.");
+                } else {
+                    l_str("Your move (");
+                    l_str(side_name(current_is_black));
+                    l_str(").");
+                }
+                l_str(" Press a key (1-64) or type a square (e.g. d3).");
+                l_say(0, -1, 0);
+                screen_status(VGA_YELLOW);
                 int sq = read_move(moves);
                 Bitboard newP, newO;
                 apply_move(P, O, sq, &newP, &newO);
@@ -533,13 +804,26 @@ int main(void)
                 char buf[3];
                 square_to_str(sq, buf);
                 printf("%s played %s\n", side_name(current_is_black), buf);
+                vga_blank(68, 10, 12);
+                screen_last_move(current_is_black, sq, 0, 0);
             } else {
-                printf("AI (%s) is thinking...\n", side_name(current_is_black));
+                l_clear();
+                l_str("AI (");
+                l_str(side_name(current_is_black));
+                l_str(") is thinking...");
+                l_say(0, -1, 0);
+                screen_status(0);
                 const LevelDef *lv = &levels[level];
                 uint32_t t0 = (uint32_t)timer_now();     // microseconds
-                SearchResult res = (lv->depth == 0)
-                    ? find_weak_move(black, white, current_is_black, lv->pick, rng_next())
-                    : find_best_move(black, white, current_is_black, lv->depth, lv->harts);
+                SearchResult res;
+                if (lv->depth == 0)
+                    res = find_weak_move(black, white, current_is_black, lv->pick, rng_next());
+                else if (lv->depth == TIMED)
+                    res = find_best_move_timed(black, white, current_is_black,
+                                               (uint32_t)think_choices[think_idx] * 1000000u,
+                                               MAX_SEARCH_DEPTH, lv->harts);
+                else
+                    res = find_best_move(black, white, current_is_black, lv->depth, lv->harts);
                 uint32_t ms = ((uint32_t)timer_now() - t0) / 1000u;
                 if (res.square >= 0) {
                     Bitboard newP, newO;
@@ -548,18 +832,48 @@ int main(void)
                     white = current_is_black ? newO : newP;
                     char buf[3];
                     square_to_str(res.square, buf);
-                    printf("AI played %s (nodes=%d, %d.%d%d%d s)\n", buf, (int)res.nodes,
+                    // "depth 5+": depth 5 finished, and part of depth 6 read
+                    printf("AI played %s (depth %d%s, nodes=%d, %d.%d%d%d s)\n", buf,
+                           res.depth_reached, res.partial ? "+" : "", (int)res.nodes,
                            (int)(ms / 1000u), (int)(ms / 100u % 10u), (int)(ms / 10u % 10u),
                            (int)(ms % 10u));
+                    vga_blank(68, 10, 12);
+                    screen_last_move(current_is_black, res.square, &res, ms);
                 }
             }
 
             current_is_black = !current_is_black;
         }
 
-        print_board(black, white, 0, side_char(1), side_char(0));
+        print_board(black, white, 0, black_white);
         update_led_matrix(black, white);
         print_result(black, white);
+        if (!two_players)
+            screen_stats();             // with this game counted
+
+        // Game over on the screen until a key starts the next menu
+        vga_hints(0);
+        screen_counts(black, white, 0, 1);
+        int bc = popcount(black), wc = popcount(white);
+        l_clear();
+        l_str("Game over: ");
+        l_str(side_name(1));
+        l_str(" ");
+        l_int(bc);
+        l_str(" - ");
+        l_int(wc);
+        l_str(" ");
+        l_str(side_name(0));
+        l_str(bc == wc ? ". Draw." : ". ");
+        if (bc != wc) {
+            l_str(side_name(bc > wc));
+            l_str(" wins!");
+        }
+        l_str("  Press any key.");
+        screen_status(VGA_YELLOW);
+        int from_usb;
+        usb_key_flush();
+        wait_key_press(&from_usb);
     }
 
     return 0;

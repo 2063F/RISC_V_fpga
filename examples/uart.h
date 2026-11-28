@@ -105,7 +105,7 @@ static inline int mini_printf(const char *format, ...) {
                 case 'p': {
                     void *ptr = va_arg(args, void *);
                     uart_print("0x");
-                    _uart_print_num((unsigned int)(unsigned long)ptr, 16, 0);
+                    _uart_print_num((unsigned int)(__UINTPTR_TYPE__)ptr, 16, 0);
                     break;
                 }
                 case '%': {

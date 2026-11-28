@@ -37,17 +37,32 @@ Bitboard get_moves(Bitboard P, Bitboard O);
 void apply_move(Bitboard P, Bitboard O, int sq, Bitboard *newP, Bitboard *newO);
 
 /* rv32im には popcount/ctz 命令が無いのでソフトウェアで実装する
-   (libgcc の __popcountdi2 / __ctzdi2 呼び出しを避け、依存を減らす) */
+   (libgcc の __popcountdi2 / __ctzdi2 呼び出しを避け、依存を減らす)。
+   どちらも 32 ビットの半分ずつ、ループなしで数える (ビットを 1 つずつ
+   数えるループより 1 桁速い。評価関数が十数回呼ぶ) */
+static inline int popcount32(uint32_t x) {
+    x = x - ((x >> 1) & 0x55555555u);
+    x = (x & 0x33333333u) + ((x >> 2) & 0x33333333u);
+    x = (x + (x >> 4)) & 0x0F0F0F0Fu;
+    return (int)((x * 0x01010101u) >> 24);
+}
+
 static inline int popcount(Bitboard bb) {
-    int n = 0;
-    while (bb) { bb &= bb - 1; n++; }
-    return n;
+    return popcount32((uint32_t)bb) + popcount32((uint32_t)(bb >> 32));
+}
+
+/* 最下位の 1 のビット位置 (bb != 0 であること)。de Bruijn 列で引く */
+static inline int ctz32(uint32_t x) {
+    static const unsigned char TABLE[32] = {
+        0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+        31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9
+    };
+    return TABLE[((x & (0u - x)) * 0x077CB531u) >> 27];
 }
 
 static inline int ctz64(Bitboard bb) {
-    int n = 0;
-    while ((bb & 1u) == 0u) { bb >>= 1; n++; }
-    return n;
+    uint32_t lo = (uint32_t)bb;
+    return lo ? ctz32(lo) : 32 + ctz32((uint32_t)(bb >> 32));
 }
 
 static inline int sq_of(int col, int row) { return row * 8 + col; }
@@ -57,10 +72,10 @@ static inline int row_of(int sq) { return sq / 8; }
 /* マス番号 -> "f5" のような2文字表記（out は3バイト以上確保すること） */
 void square_to_str(int sq, char *out);
 
-/* 盤面をUARTにテキスト表示する (要 uart.h)。
-   黒石・白石はそれぞれ black_ch / white_ch の文字で示す。
-   hints のマス（合法手）は全角の「〇」で示す。不要なら 0 を渡す */
-void print_board(Bitboard black, Bitboard white, Bitboard hints,
-                 char black_ch, char white_ch);
+/* 盤面をUARTにテキスト表示する (要 uart.h)。hints のマス（合法手）にも
+   印を付ける (不要なら 0 を渡す)。
+   symbols = 0: 黒石 R・白石 G・合法手 〇 (赤 / 緑で呼ぶとき)
+   symbols = 1: 黒石 ●・白石 ○・合法手 △ と、その凡例 (黒 / 白で呼ぶとき) */
+void print_board(Bitboard black, Bitboard white, Bitboard hints, int symbols);
 
 #endif

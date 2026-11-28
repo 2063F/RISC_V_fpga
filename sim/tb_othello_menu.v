@@ -66,7 +66,8 @@ module tb_othello_menu;
             end
             #(BIT_NS + BIT_HALF_NS);
             $write("%c", data);
-            tail = {tail[8*47-1:0], data};
+            if (data != 8'h0D)               // uart.h sends "\r\n"; match on "\n" alone
+                tail = {tail[8*47-1:0], data};
             -> got_char;
         end
     end
@@ -94,8 +95,12 @@ module tb_othello_menu;
         key = 0;
     end
 
+    // Waits 1 ms first: the last character of a prompt arrives here as the
+    // program still writes that line to the VGA, and a key already down when
+    // it starts waiting counts as held, not as a new press.
     task press(input [6:0] k);
         begin
+            #1_000_000;
             press_key = k;
             -> do_press;
         end

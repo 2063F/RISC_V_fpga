@@ -74,6 +74,13 @@ module fpga_top #(
     wire        mmio_led_ctrl;
     wire [63:0] led_green_bitmap;
     wire [63:0] led_red_bitmap;
+    wire [63:0] vga_hint_bitmap;
+    wire        vga_show_board;
+    wire        vga_red_green;
+    wire [6:0]  vga_last_move;
+    wire        vga_text_we;
+    wire [11:0] vga_text_waddr;
+    wire [7:0]  vga_text_wdata;
     wire        usbkey_valid;
     wire [5:0]  usbkey_index;
     wire        usbkey_connected;
@@ -113,19 +120,31 @@ module fpga_top #(
         .led_ctrl   (mmio_led_ctrl),
         .kbd_row    (kbd_row),
         .led_green_bitmap (led_green_bitmap),
-        .led_red_bitmap   (led_red_bitmap)
+        .led_red_bitmap   (led_red_bitmap),
+        .vga_hint_bitmap  (vga_hint_bitmap),
+        .vga_show_board   (vga_show_board),
+        .vga_red_green    (vga_red_green),
+        .vga_last_move    (vga_last_move),
+        .vga_text_we      (vga_text_we),
+        .vga_text_waddr   (vga_text_waddr),
+        .vga_text_wdata   (vga_text_wdata)
     );
 
-    // The LED matrix is mounted upside down relative to the board, so show
-    // it rotated 180 degrees: square sq is lit at dot 63 - sq, which is just
-    // the bitmap with its bit order reversed. The VGA keeps the bitmaps as-is.
+    // The LED matrix is mounted turned relative to the board, so its dots are
+    // remapped to show the board the same way up as the VGA: square (r, c) of
+    // the bitmap (bit r*8+c) is driven on dot (c, 7-r), i.e. dot (pr, pc)
+    // shows square (7-pc, pr). Wiring only, no logic. (This was a 180-degree
+    // turn, dot 63 - sq, which showed the board turned 90 degrees clockwise
+    // against the VGA.) The VGA keeps the bitmaps as-is.
     wire [63:0] led_mat_green;
     wire [63:0] led_mat_red;
-    genvar gi;
+    genvar pr, pc;
     generate
-        for (gi = 0; gi < 64; gi = gi + 1) begin : g_led_rot180
-            assign led_mat_green[gi] = led_green_bitmap[63 - gi];
-            assign led_mat_red[gi]   = led_red_bitmap[63 - gi];
+        for (pr = 0; pr < 8; pr = pr + 1) begin : g_led_row
+            for (pc = 0; pc < 8; pc = pc + 1) begin : g_led_col
+                assign led_mat_green[pr*8 + pc] = led_green_bitmap[(7-pc)*8 + pr];
+                assign led_mat_red[pr*8 + pc]   = led_red_bitmap[(7-pc)*8 + pr];
+            end
         end
     endgenerate
 
@@ -146,6 +165,13 @@ module fpga_top #(
         .rst_n         (cpu_rst_n),
         .black_bitmap  (led_green_bitmap),
         .white_bitmap  (led_red_bitmap),
+        .hint_bitmap   (vga_hint_bitmap),
+        .last_move     (vga_last_move),
+        .show_board    (vga_show_board),
+        .red_green     (vga_red_green),
+        .text_we       (vga_text_we),
+        .text_waddr    (vga_text_waddr),
+        .text_wdata    (vga_text_wdata),
         .vga_r         (vga_r),
         .vga_g         (vga_g),
         .vga_b         (vga_b),

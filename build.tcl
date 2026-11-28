@@ -56,6 +56,13 @@ file mkdir [file dirname $staged_usb_rom]
 file copy -force [file join $root_dir $usb_rom] $staged_usb_rom
 puts "Staged USB host ROM: $staged_usb_rom"
 
+# vga_board's font ROM is loaded the same way.
+set vga_font "src/vga_font.hex"
+set staged_vga_font [file join [pwd] $vga_font]
+file mkdir [file dirname $staged_vga_font]
+file copy -force [file join $root_dir $vga_font] $staged_vga_font
+puts "Staged VGA font: $staged_vga_font"
+
 # Set Top Module and options
 set_option -top_module fpga_top
 set_option -use_sspi_as_gpio 1

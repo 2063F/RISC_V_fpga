@@ -19,10 +19,31 @@
 // same orientation print_board() uses on the UART (a1 = top-left).
 //   empty square = green, black stone = black disc, white stone = white disc,
 //   grid lines = black, outside the board = black.
+// With red_green set (the sides called Red / Green), black's stones are red
+// and white's green, on a blue board so that the green ones stand out, and
+// the last-move dot is white.
 //
 // Timing: 25 MHz pixel rate from the 50 MHz clock via a clock enable (no PLL,
 // no second clock domain). The standard is 25.175 MHz; 25.0 MHz (59.5 Hz
 // frame) is within what monitors accept for 640x480.
+//
+// On the board, squares in hint_bitmap (the moves the player can make) get a
+// small yellow dot, and the stone at last_move (bit 6 = valid, bits 5:0 = the
+// square) a small red one.
+//
+// Text: 80 x 30 characters of 8 x 16 pixels over the whole screen, from a
+// text RAM the CPU writes (board_io.v: 0x8000_1000 + row * 128 + column, one
+// byte per character). Bits 6:0 are the character (ASCII; src/vga_font.hex
+// holds font8x8_basic by Daniel Hepper, public domain, each row doubled),
+// bit 7 colours it yellow instead of white. With show_board set the board
+// covers the text under it (rows 1-28, columns 12-67), so the text around it
+// - row 0, row 29 and 12 columns either side - is free for the game; with
+// show_board clear the whole screen is text (for the menu).
+//
+// The text pipeline fetches each character a cell ahead: at the first pixel
+// of a cell it reads the text RAM for the next cell, a clock later the font
+// row, and at the last pixel of the cell it latches that row for the next 8
+// pixels. Every pixel lasts two clocks, so both memories have time to answer.
 // =============================================================================
 
 module vga_board (
@@ -30,6 +51,13 @@ module vga_board (
     input  wire        rst_n,
     input  wire [63:0] black_bitmap,
     input  wire [63:0] white_bitmap,
+    input  wire [63:0] hint_bitmap,
+    input  wire [6:0]  last_move,    // bit 6 = valid, bits 5:0 = square
+    input  wire        show_board,
+    input  wire        red_green,    // 1: red and green stones on a blue board
+    input  wire        text_we,      // text RAM write port (CPU)
+    input  wire [11:0] text_waddr,   // row * 128 + column
+    input  wire [7:0]  text_wdata,
     output reg         vga_r,
     output reg         vga_g,
     output reg         vga_b,
@@ -59,6 +87,8 @@ module vga_board (
 
     // Stone radius, in doubled coordinates (see disc test below): 22 px.
     localparam integer DISC_R2 = (2 * 22) * (2 * 22);
+    // Hint / last-move dot: 6 px
+    localparam integer DOT_R2  = (2 * 6) * (2 * 6);
 
     // -------------------------------------------------------------------------
     // Pixel clock enable and scan counters
@@ -147,9 +177,70 @@ module vga_board (
     wire signed [7:0]  dy   = $signed({1'b0, in_y, 1'b0}) - 8'sd55;
     wire        [13:0] dist = dx * dx + dy * dy;
     wire               disc = (dist < DISC_R2);
+    wire               dot  = (dist < DOT_R2);
 
     wire is_black = black_bitmap[sq];
     wire is_white = white_bitmap[sq];
+    wire is_hint  = hint_bitmap[sq];
+    wire is_last  = last_move[6] && (last_move[5:0] == sq);
+
+    // -------------------------------------------------------------------------
+    // Text
+    // -------------------------------------------------------------------------
+    reg [7:0] text_mem [0:4095];       // row * 128 + column; BSRAM
+    reg [7:0] font_mem [0:2047];       // character * 16 + line; BSRAM (ROM)
+
+    initial $readmemh("src/vga_font.hex", font_mem);  // path relative to the repo root (build.tcl stages it for Gowin)
+
+    // BSRAM comes up zeroed (character 0 is blank); simulation has to be told.
+    // synthesis translate_off
+    integer ti;
+    initial begin
+        for (ti = 0; ti < 4096; ti = ti + 1)
+            text_mem[ti] = 8'd0;
+        text_q = 8'd0; font_q = 8'd0; cell_bits = 8'd0; cell_yellow = 1'b0;
+        fetch_valid = 1'b0; fetch_yellow = 1'b0; text_raddr = 12'd0; fetch_line = 4'd0;
+    end
+    // synthesis translate_on
+
+    always @(posedge clk) begin
+        if (text_we)
+            text_mem[text_waddr] <= text_wdata;
+    end
+
+    // The cell after the current one (8 pixels on, into the next line at the
+    // end of one)
+    wire [9:0] h_ahead_raw = h_cnt + 10'd8;
+    wire       ahead_wrap  = (h_ahead_raw >= H_TOTAL);
+    wire [9:0] h_ahead     = ahead_wrap ? h_ahead_raw - H_TOTAL : h_ahead_raw;
+    wire [9:0] v_ahead     = !ahead_wrap ? v_cnt :
+                             (v_cnt == V_TOTAL - 1) ? 10'd0 : v_cnt + 10'd1;
+
+    reg  [11:0] text_raddr;
+    reg  [3:0]  fetch_line;
+    reg         fetch_valid;
+    reg  [7:0]  text_q;
+    reg  [7:0]  font_q;
+    reg  [7:0]  cell_bits;             // font row of the current cell (bit 0 = left)
+    reg         cell_yellow;
+    reg         fetch_yellow;
+
+    always @(posedge clk) begin
+        if (pix_en && h_cnt[2:0] == 3'd0) begin
+            text_raddr  <= {v_ahead[8:4], h_ahead[9:3]};
+            fetch_line  <= v_ahead[3:0];
+            fetch_valid <= (h_ahead < H_VISIBLE) && (v_ahead < V_VISIBLE);
+        end
+        text_q       <= text_mem[text_raddr];
+        font_q       <= font_mem[{text_q[6:0], fetch_line}];
+        fetch_yellow <= text_q[7];
+        if (pix_en && h_cnt[2:0] == 3'd7) begin
+            cell_bits   <= fetch_valid ? font_q : 8'd0;
+            cell_yellow <= fetch_yellow;
+        end
+    end
+
+    wire text_on = cell_bits[h_cnt[2:0]];
 
     // -------------------------------------------------------------------------
     // Registered outputs (sync and color share the same one-pixel latency)
@@ -165,14 +256,25 @@ module vga_board (
             vga_vsync <= ~((v_cnt >= V_VISIBLE + V_FRONT) &&
                            (v_cnt <  V_VISIBLE + V_FRONT + V_SYNC));
 
-            if (!show_q || grid) begin
+            if (!(show_q && show_board)) begin
+                // Text (or nothing)
+                if (visible && text_on)
+                    {vga_r, vga_g, vga_b} <= cell_yellow ? 3'b110 : 3'b111;
+                else
+                    {vga_r, vga_g, vga_b} <= 3'b000;
+            end else if (grid) begin
                 {vga_r, vga_g, vga_b} <= 3'b000;
-            end else if (disc && is_black) begin
-                {vga_r, vga_g, vga_b} <= 3'b000;
-            end else if (disc && is_white) begin
-                {vga_r, vga_g, vga_b} <= 3'b111;
+            end else if (disc && (is_black || is_white)) begin
+                if (dot && is_last)                    // the last move: red dot (white on red / green)
+                    {vga_r, vga_g, vga_b} <= red_green ? 3'b111 : 3'b100;
+                else if (red_green)                    // black's stones red, white's green
+                    {vga_r, vga_g, vga_b} <= is_white ? 3'b010 : 3'b100;
+                else
+                    {vga_r, vga_g, vga_b} <= is_white ? 3'b111 : 3'b000;
+            end else if (dot && is_hint) begin
+                {vga_r, vga_g, vga_b} <= 3'b110;       // yellow: a move the player can make
             end else begin
-                {vga_r, vga_g, vga_b} <= 3'b010;   // board green
+                {vga_r, vga_g, vga_b} <= red_green ? 3'b001 : 3'b010;  // board blue / green
             end
         end
     end

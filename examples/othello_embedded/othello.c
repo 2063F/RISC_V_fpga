@@ -28,18 +28,40 @@ Bitboard shift_dir(Bitboard bb, int d) {
     }
 }
 
+/* 1 方向ぶんの合法手。シフト量を定数にして (インライン展開される)、
+   列をまたぐ方向では相手の石を b-g 列に限ることで回り込みを防ぐ:
+   連続する相手の石が a 列や h 列を通ることはないので、端で折り返した
+   ビットは途中で消える。可変のシフト量で 64 ビットを動かすと RV32 では
+   分岐だらけになり、評価関数の中で一番重かった */
+#define INNER_COLS 0x7E7E7E7E7E7E7E7EULL
+
+static inline Bitboard moves_up(Bitboard P, Bitboard mO, Bitboard empty, int s) {
+    Bitboard x = (P << s) & mO;
+    x |= (x << s) & mO;
+    x |= (x << s) & mO;
+    x |= (x << s) & mO;
+    x |= (x << s) & mO;
+    x |= (x << s) & mO;
+    return (x << s) & empty;
+}
+
+static inline Bitboard moves_down(Bitboard P, Bitboard mO, Bitboard empty, int s) {
+    Bitboard x = (P >> s) & mO;
+    x |= (x >> s) & mO;
+    x |= (x >> s) & mO;
+    x |= (x >> s) & mO;
+    x |= (x >> s) & mO;
+    x |= (x >> s) & mO;
+    return (x >> s) & empty;
+}
+
 Bitboard get_moves(Bitboard P, Bitboard O) {
     Bitboard empty = ~(P | O);
-    Bitboard moves = 0;
-    for (int i = 0; i < 8; i++) {
-        int d = DIRS[i];
-        Bitboard x = shift_dir(P, d) & O;
-        for (int k = 0; k < 5; k++) {
-            x |= shift_dir(x, d) & O;
-        }
-        moves |= shift_dir(x, d) & empty;
-    }
-    return moves;
+    Bitboard inner = O & INNER_COLS;
+    return moves_up(P, O, empty, 8)     | moves_down(P, O, empty, 8)        /* 縦 */
+         | moves_up(P, inner, empty, 1) | moves_down(P, inner, empty, 1)    /* 横 */
+         | moves_up(P, inner, empty, 9) | moves_down(P, inner, empty, 9)    /* 斜め */
+         | moves_up(P, inner, empty, 7) | moves_down(P, inner, empty, 7);
 }
 
 void apply_move(Bitboard P, Bitboard O, int sq, Bitboard *newP, Bitboard *newO) {
@@ -67,25 +89,30 @@ void square_to_str(int sq, char *out) {
     out[2] = '\0';
 }
 
-void print_board(Bitboard black, Bitboard white, Bitboard hints,
-                 char black_ch, char white_ch) {
+/* UTF-8 の記号。日本語の端末 (Tera Term など) では全角、つまり 2 桁ぶんで
+   表示されるので、後ろに空白は付けない。空きマスは半角の「. 」で 2 桁 */
+#define SYM_BLACK "\xE2\x97\x8F"     /* U+25CF ● */
+#define SYM_WHITE "\xE2\x97\x8B"     /* U+25CB ○ */
+#define SYM_HINT  "\xE2\x96\xB3"     /* U+25B3 △ */
+#define SYM_HINT0 "\xE3\x80\x87"     /* U+3007 〇 */
+
+void print_board(Bitboard black, Bitboard white, Bitboard hints, int symbols) {
     for (int r = 0; r < 8; r++) {
         printf("%d ", r + 1);
         for (int c = 0; c < 8; c++) {
-            int sq = sq_of(c, r);
-            Bitboard bit = 1ULL << sq;
-            if (hints & bit) {
-                /* 全角(UTF-8)の〇は端末上で2桁ぶんなので、後ろの空白は付けない */
-                uart_print("\xE3\x80\x87"); /* U+3007 〇 */
-                continue;
-            }
-            char ch = '.';
-            if (black & bit) ch = black_ch;
-            else if (white & bit) ch = white_ch;
-            uart_putchar(ch);
-            uart_putchar(' ');
+            Bitboard bit = 1ULL << sq_of(c, r);
+            if (black & bit)      uart_print(symbols ? SYM_BLACK : "R ");
+            else if (white & bit) uart_print(symbols ? SYM_WHITE : "G ");
+            else if (hints & bit) uart_print(symbols ? SYM_HINT : SYM_HINT0);
+            else                  uart_print(". ");
         }
         uart_print("\n");
     }
     uart_print("  a b c d e f g h\n");
+    if (symbols) {
+        uart_print(SYM_BLACK " Black  " SYM_WHITE " White");
+        if (hints)
+            uart_print("  " SYM_HINT " can play");
+        uart_print("\n");
+    }
 }

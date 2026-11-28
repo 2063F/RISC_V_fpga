@@ -8,7 +8,7 @@
 // Build like othello (main.c), with search_bench.c in place of main.c:
 //   riscv64-unknown-elf-gcc -march=rv32imac_zicsr -mabi=ilp32 -O2 -nostdlib
 //     -nostartfiles -I examples -T tools/link_mp.ld
-//     -Wl,--defsym=__hart_stack_size=0x2800 tools/crt0.S
+//     -Wl,--defsym=__hart_stack_size=0x3000 tools/crt0.S
 //     examples/othello_embedded/{search_bench,othello,evaluate,search}.c -lgcc
 //     -o examples/othello_embedded/search_bench.elf
 #include "othello.h"
@@ -24,6 +24,14 @@
 #ifndef BENCH_POSITIONS
 #define BENCH_POSITIONS 3
 #endif
+#ifndef BENCH_TIMED_MS
+#define BENCH_TIMED_MS 50       // time per move of the timed part
+#endif
+
+uint32_t search_time_us(void)
+{
+    return (uint32_t)timer_now();
+}
 
 void hart_main(unsigned int hartid)
 {
@@ -90,6 +98,24 @@ int main(void)
     printf("total kcycles: 1 hart %d, 2 harts %d (x%d.%d%d)\n",
            (int)(total1 / 1000u), (int)(total2 / 1000u),
            (int)(x100 / 100u), (int)(x100 / 10u % 10u), (int)(x100 % 10u));
+
+    // The timed search (find_best_move_timed) on the last position: a legal
+    // move, within the time (one check every 16 nodes may run a little
+    // over), and the depth each finished.
+    Bitboard P = is_black ? black : white;
+    Bitboard O = is_black ? white : black;
+    Bitboard legal = get_moves(P, O);
+    for (int harts = 1; harts <= 2; harts++) {
+        uint32_t t0 = search_time_us();
+        SearchResult r = find_best_move_timed(black, white, is_black,
+                                              BENCH_TIMED_MS * 1000u, 60, harts);
+        uint32_t us = search_time_us() - t0;
+        int ok = r.square >= 0 && ((legal >> r.square) & 1u) && r.depth_reached >= 1 &&
+                 us < BENCH_TIMED_MS * 1000u * 3u / 2u;
+        failures += !ok;
+        printf("timed %d ms, %d hart(s): move %d, depth %d, %d us  %s\n", BENCH_TIMED_MS,
+               harts, r.square, r.depth_reached, (int)us, ok ? "ok" : "FAIL");
+    }
     printf(failures ? "SOME FAILED\n" : "ALL OK\n");
     for (;;)
         ;

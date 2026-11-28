@@ -30,6 +30,15 @@
 //                   usb_keyboard two clocks after the store, so a read in
 //                   that clock reports no event (bit 8 = 0) rather than the
 //                   one being consumed; the next read sees the next event.
+//   0x8000_0044 : VGA hint bitmap, bits [31:0]  (squares marked with a dot)
+//   0x8000_0048 : VGA hint bitmap, bits [63:32]
+//   0x8000_004C : VGA control: bit 0 = show the board (1 after reset; 0 = the
+//                 whole screen is text), bit 1 = red and green stones (the
+//                 sides called Red / Green; 0 after reset = black and white)
+//   0x8000_0050 : VGA last move: bit 6 = valid, bits 5:0 = square (red dot)
+//   0x8000_1000 - 0x8000_1FFF : VGA text, write only: byte at
+//                 0x8000_1000 + row * 128 + column (80 x 30), bits 6:0 the
+//                 character, bit 7 = yellow (see vga_board.v)
 //
 // read_data is registered: it answers the address one clock later. The CPU
 // samples external load data in the load's second (data) cycle with the
@@ -60,7 +69,14 @@ module board_io (
     output reg         led_ctrl,
     output reg  [7:0]  kbd_row,
     output reg  [63:0] led_green_bitmap,
-    output reg  [63:0] led_red_bitmap
+    output reg  [63:0] led_red_bitmap,
+    output reg  [63:0] vga_hint_bitmap,
+    output reg         vga_show_board,
+    output reg         vga_red_green,
+    output reg  [6:0]  vga_last_move,
+    output reg         vga_text_we,
+    output reg  [11:0] vga_text_waddr,
+    output reg  [7:0]  vga_text_wdata
 );
 
     localparam [31:0] LED_ADDR          = 32'h8000_0020;
@@ -72,6 +88,11 @@ module board_io (
     localparam [31:0] LED_RED_LO_ADDR   = 32'h8000_0038;
     localparam [31:0] LED_RED_HI_ADDR   = 32'h8000_003C;
     localparam [31:0] USBKEY_ADDR       = 32'h8000_0040;
+    localparam [31:0] VGA_HINT_LO_ADDR  = 32'h8000_0044;
+    localparam [31:0] VGA_HINT_HI_ADDR  = 32'h8000_0048;
+    localparam [31:0] VGA_CTRL_ADDR     = 32'h8000_004C;
+    localparam [31:0] VGA_LAST_ADDR     = 32'h8000_0050;
+    localparam [19:0] VGA_TEXT_PAGE     = 20'h8000_1;     // 0x8000_1000 - 0x8000_1FFF
 
     // The store, a clock late (see the top of this file). Stores never stall
     // in the CPU, so write_en is a single-cycle pulse.
@@ -86,6 +107,14 @@ module board_io (
             wr_q <= write_en;
         waddr_q <= addr;
         wdata_q <= write_data;
+    end
+
+    // Text RAM writes go straight on to vga_board (its write port is registered
+    // there, a clock later again; nothing reads the text back)
+    always @(posedge clk) begin
+        vga_text_we    <= rst_n && wr_q && (waddr_q[31:12] == VGA_TEXT_PAGE);
+        vga_text_waddr <= waddr_q[11:0];
+        vga_text_wdata <= wdata_q[7:0];
     end
 
     // The pop is registered as well: combinational, it ran into
@@ -103,6 +132,10 @@ module board_io (
             kbd_row          <= 8'hFF;
             led_green_bitmap <= 64'd0;
             led_red_bitmap   <= 64'd0;
+            vga_hint_bitmap  <= 64'd0;
+            vga_show_board   <= 1'b1;
+            vga_red_green    <= 1'b0;
+            vga_last_move    <= 7'd0;
         end else begin
             if (wr_q && waddr_q == LED_ADDR) begin
                 led_ctrl <= wdata_q[0];
@@ -122,6 +155,19 @@ module board_io (
             if (wr_q && waddr_q == LED_RED_HI_ADDR) begin
                 led_red_bitmap[63:32] <= wdata_q;
             end
+            if (wr_q && waddr_q == VGA_HINT_LO_ADDR) begin
+                vga_hint_bitmap[31:0] <= wdata_q;
+            end
+            if (wr_q && waddr_q == VGA_HINT_HI_ADDR) begin
+                vga_hint_bitmap[63:32] <= wdata_q;
+            end
+            if (wr_q && waddr_q == VGA_CTRL_ADDR) begin
+                vga_show_board <= wdata_q[0];
+                vga_red_green  <= wdata_q[1];
+            end
+            if (wr_q && waddr_q == VGA_LAST_ADDR) begin
+                vga_last_move <= wdata_q[6:0];
+            end
         end
     end
 
@@ -139,6 +185,10 @@ module board_io (
                 LED_RED_HI_ADDR:   read_data <= led_red_bitmap[63:32];
                 USBKEY_ADDR:       read_data <= {22'd0, usbkey_connected, usbkey_valid && !usbkey_pop,
                                                  2'd0, usbkey_index};
+                VGA_HINT_LO_ADDR:  read_data <= vga_hint_bitmap[31:0];
+                VGA_HINT_HI_ADDR:  read_data <= vga_hint_bitmap[63:32];
+                VGA_CTRL_ADDR:     read_data <= {30'd0, vga_red_green, vga_show_board};
+                VGA_LAST_ADDR:     read_data <= {25'd0, vga_last_move};
                 default:           read_data <= 32'd0;
             endcase
         end
